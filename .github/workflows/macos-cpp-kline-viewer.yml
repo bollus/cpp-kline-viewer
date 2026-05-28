@@ -1,0 +1,41 @@
+name: Build macOS C++ K-Line Viewer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "**"
+
+jobs:
+  macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.6.3"
+          modules: "qtwebsockets"
+          cache: true
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Deploy Qt runtime
+        run: macdeployqt build/q4j_kline_viewer.app -verbose=2
+
+      - name: Package app
+        run: |
+          mkdir -p build/package
+          ditto -c -k --sequesterRsrc --keepParent build/q4j_kline_viewer.app build/package/q4j-kline-viewer-macos.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: q4j-kline-viewer-macos
+          path: build/package/**
