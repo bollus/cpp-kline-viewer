@@ -1575,6 +1575,7 @@ class MainWindow : public QMainWindow {
 public:
   MainWindow() {
     setWindowTitle("Q4J Market Structure Desk");
+    setWindowIcon(QIcon(":/app-icon.svg"));
     setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
     setMouseTracking(true);
     resize(1440, 860);
@@ -1591,6 +1592,9 @@ public:
 protected:
   bool eventFilter(QObject *watched, QEvent *event) override {
     if (watched == titleBar_) {
+      if (event->type() == QEvent::Enter || event->type() == QEvent::MouseMove) {
+        if (!resizingWindow_) clearResizeCursors();
+      }
       if (event->type() == QEvent::MouseButtonDblClick) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         if (mouse->button() == Qt::LeftButton) {
@@ -1714,7 +1718,7 @@ private:
     if (chart_) chart_->setCursor(cursor);
     if (header_) header_->setCursor(cursor);
     if (footer_) footer_->setCursor(cursor);
-    if (titleBar_) titleBar_->setCursor(cursor);
+    if (titleBar_) titleBar_->unsetCursor();
   }
 
   void updateResizeCursor(const QPoint &pos) {
