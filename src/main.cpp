@@ -56,6 +56,7 @@ public:
 
   void setCandles(QVector<Candle> candles) {
     candles_ = std::move(candles);
+    messageText_.clear();
     overlayEvents_ = {};
     parsedOverlayEvents_.clear();
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
@@ -98,6 +99,17 @@ public:
     update();
   }
 
+  void showMessage(const QString &message) {
+    messageText_ = message;
+    update();
+  }
+
+  void clearMessage() {
+    if (messageText_.isEmpty()) return;
+    messageText_.clear();
+    update();
+  }
+
   void upsertCandle(const Candle &candle) {
     const auto it = std::lower_bound(candles_.begin(), candles_.end(), candle.ms, [](const Candle &item, qint64 ms) {
       return item.ms < ms;
@@ -132,6 +144,10 @@ protected:
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, false);
     paintBackground(p);
+    if (candles_.isEmpty() && !messageText_.isEmpty()) {
+      paintChartMessage(p);
+      return;
+    }
     double minPrice, maxPrice;
     visibleRange(minPrice, maxPrice);
     paintGrid(p, minPrice, maxPrice);
@@ -166,6 +182,7 @@ protected:
       const double newLocalIndex = axisAnchorLocalX_ / std::max(0.05, newStep) - 0.5;
       visibleStart_ = static_cast<int>(std::round(axisAnchorIndex_ - newLocalIndex));
       visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
+      lockCurrentPriceRange();
       emitOverlayRange();
       emitVisibleRange();
       update();
@@ -214,6 +231,7 @@ protected:
       axisVisibleStart_ = visibleStart_;
       axisAnchorLocalX_ = std::clamp(event->position().x() - plotRect().left(), 0.0, plotRect().width());
       axisAnchorIndex_ = visibleStart_ + axisAnchorLocalX_ / std::max(0.05, barStep()) - 0.5;
+      lockCurrentPriceRange();
       return;
     }
     dragging_ = true;
@@ -236,6 +254,7 @@ protected:
   void wheelEvent(QWheelEvent *event) override {
     if (candles_.isEmpty()) return;
     const int before = visibleCount_;
+    lockCurrentPriceRange();
     const QRectF plot = plotRect();
     const double oldStep = plot.width() / std::max(1, visibleCount_);
     const double anchorLocalX = std::clamp(event->position().x() - plot.left(), 0.0, plot.width());
@@ -261,6 +280,7 @@ protected:
     if (event->button() == Qt::LeftButton && priceAxisRect().contains(event->position())) {
       manualPriceScale_ = 1.0;
       manualPriceOffset_ = 0.0;
+      priceRangeLocked_ = false;
       update();
     }
   }
@@ -307,6 +327,11 @@ private:
   QColor down() const { return QColor("#ef5f78"); }
 
   void visibleRange(double &minPrice, double &maxPrice) const {
+    if (priceRangeLocked_ && std::isfinite(lockedMinPrice_) && std::isfinite(lockedMaxPrice_) && lockedMinPrice_ < lockedMaxPrice_) {
+      minPrice = lockedMinPrice_;
+      maxPrice = lockedMaxPrice_;
+      return;
+    }
     minPrice = std::numeric_limits<double>::max();
     maxPrice = std::numeric_limits<double>::lowest();
     const int end = std::min(candleCount(), visibleStart_ + visibleCount_);
@@ -331,6 +356,28 @@ private:
     maxPrice += manualPriceOffset_;
   }
 
+  void autoVisibleRange(double &minPrice, double &maxPrice) const {
+    const bool wasLocked = priceRangeLocked_;
+    const double lockedMin = lockedMinPrice_;
+    const double lockedMax = lockedMaxPrice_;
+    const_cast<ChartWidget *>(this)->priceRangeLocked_ = false;
+    visibleRange(minPrice, maxPrice);
+    const_cast<ChartWidget *>(this)->priceRangeLocked_ = wasLocked;
+    const_cast<ChartWidget *>(this)->lockedMinPrice_ = lockedMin;
+    const_cast<ChartWidget *>(this)->lockedMaxPrice_ = lockedMax;
+  }
+
+  void lockCurrentPriceRange() {
+    double minPrice, maxPrice;
+    if (priceRangeLocked_) visibleRange(minPrice, maxPrice);
+    else autoVisibleRange(minPrice, maxPrice);
+    if (std::isfinite(minPrice) && std::isfinite(maxPrice) && minPrice < maxPrice) {
+      lockedMinPrice_ = minPrice;
+      lockedMaxPrice_ = maxPrice;
+      priceRangeLocked_ = true;
+    }
+  }
+
   double yFor(double price, double minPrice, double maxPrice) const {
     const QRectF r = plotRect();
     return r.bottom() - ((price - minPrice) / (maxPrice - minPrice)) * r.height();
@@ -343,6 +390,38 @@ private:
 
   void paintBackground(QPainter &p) {
     p.fillRect(rect(), bg());
+  }
+
+  void paintChartMessage(QPainter &p) {
+    const QRectF r = plotRect();
+    p.setPen(QPen(grid(), 1));
+    for (int i = 0; i <= 6; ++i) {
+      const double y = r.top() + r.height() * i / 6.0;
+      p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+    }
+    for (int i = 0; i <= 8; ++i) {
+      const double x = r.left() + r.width() * i / 8.0;
+      p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+    }
+
+    QRectF box(r.center().x() - 300, r.center().y() - 74, 600, 148);
+    p.setPen(QPen(dark_ ? QColor(230, 226, 211, 46) : QColor(23, 31, 27, 48), 1));
+    p.setBrush(dark_ ? QColor(14, 19, 17, 226) : QColor(255, 253, 247, 238));
+    p.drawRect(box);
+
+    QFont title = font();
+    title.setPixelSize(14);
+    title.setWeight(QFont::Black);
+    p.setFont(title);
+    p.setPen(QColor("#ef5f78"));
+    p.drawText(box.adjusted(18, 16, -18, 0), Qt::AlignLeft | Qt::AlignTop, "数据加载失败");
+
+    QFont body = font();
+    body.setPixelSize(12);
+    body.setWeight(QFont::DemiBold);
+    p.setFont(body);
+    p.setPen(text());
+    p.drawText(box.adjusted(18, 46, -18, -16), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, messageText_);
   }
 
   void paintGrid(QPainter &p, double minPrice, double maxPrice) {
@@ -379,6 +458,8 @@ private:
 
   void paintCandles(QPainter &p) {
     if (candles_.isEmpty()) return;
+    p.save();
+    p.setClipRect(plotRect());
     double minPrice, maxPrice;
     visibleRange(minPrice, maxPrice);
     const QRectF r = plotRect();
@@ -399,6 +480,7 @@ private:
       p.fillRect(body, color);
       p.drawRect(body);
     }
+    p.restore();
   }
 
   QPointF pointAt(int index, double price, double minPrice, double maxPrice) const {
@@ -922,16 +1004,16 @@ private:
     int y = 28;
     auto row = [&](bool visible, const QString &name) {
       p.setPen(visible ? text() : QColor(muted().red(), muted().green(), muted().blue(), 115));
-      drawEyeIcon(p, QRectF(14, y - 15, 20, 16), visible);
-      p.drawText(40, y, name);
+      drawEyeIcon(p, QRectF(14, y - 14, 20, 16), visible);
+      p.drawText(QRectF(40, y - 16, 170, 20), Qt::AlignVCenter | Qt::AlignLeft, name);
       y += 24;
     };
-    row(rangeVisible_, "Range");
-    row(nVisible_, "N");
-    row(ninVisible_, "N-IN");
+    row(rangeVisible_, "震荡区间");
+    row(nVisible_, "N字结构");
+    row(ninVisible_, "N-IN / N-InverseK");
     row(ifvgVisible_, "iFVG");
-    row(orderVisible_, "Order");
-    row(markerVisible_, "Marker");
+    row(orderVisible_, "持仓视图");
+    row(markerVisible_, "订单标注");
   }
 
   void drawEyeIcon(QPainter &p, const QRectF &rect, bool visible) {
@@ -1117,7 +1199,7 @@ private:
     label.setWeight(QFont::Black);
     p.setFont(label);
     p.setPen(QColor("#f0b64f"));
-    p.drawText(panel.adjusted(8, 8, 0, 0), "OHLC");
+    p.drawText(panel.adjusted(8, 8, 0, 0), "OHLC 示意图");
 
     const double top = panel.top() + 30;
     const double bodyTop = panel.top() + 58;
@@ -1151,6 +1233,7 @@ private:
     QJsonObject payload;
   };
   QVector<ParsedOverlayEvent> parsedOverlayEvents_;
+  QString messageText_;
   bool dark_ = true;
   bool rangeVisible_ = true;
   bool nVisible_ = true;
@@ -1180,6 +1263,9 @@ private:
   double manualPriceOffset_ = 0.0;
   double dragPriceOffset_ = 0.0;
   double dragPriceRange_ = 1.0;
+  bool priceRangeLocked_ = false;
+  double lockedMinPrice_ = std::numeric_limits<double>::quiet_NaN();
+  double lockedMaxPrice_ = std::numeric_limits<double>::quiet_NaN();
   QVector<PositionHitbox> positionHitboxes_;
 };
 
@@ -1245,20 +1331,23 @@ public:
       const QByteArray body = reply->readAll();
       reply->deleteLater();
       if (reply->error() != QNetworkReply::NoError) {
-        emit statusChanged("加载失败: " + replyErrorMessage(reply, body), false);
+        emit statusChanged("加载失败", false);
+        emit errorMessage(replyErrorMessage(reply, body));
         return;
       }
       const QJsonDocument doc = QJsonDocument::fromJson(body);
       if (doc.isObject()) {
         const QString message = doc.object().value("message").toString();
-        emit statusChanged(message.isEmpty() ? "加载失败: 响应格式错误" : message, false);
+        emit statusChanged("加载失败", false);
+        emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
         emit candlesLoaded({});
         emit overlayEventsLoaded({});
         socket_.close();
         return;
       }
       if (!doc.isArray()) {
-        emit statusChanged("加载失败: 响应格式错误", false);
+        emit statusChanged("加载失败", false);
+        emit errorMessage("响应格式错误");
         return;
       }
       QVector<Candle> candles;
@@ -1267,6 +1356,7 @@ public:
         candles.push_back(parseCandle(obj));
       }
       updateKnownRange(candles);
+      emit errorMessage({});
       emit candlesLoaded(candles);
       fetchOverlayEvents(knownStartMs_, knownEndMs_ + intervalMs(interval_) * 20);
       if (realtimeEnabled_) connectSocket();
@@ -1292,17 +1382,20 @@ public:
       reply->deleteLater();
       loadingOlder_ = false;
       if (reply->error() != QNetworkReply::NoError) {
-        emit statusChanged("历史加载失败: " + replyErrorMessage(reply, body), false);
+        emit statusChanged("历史加载失败", false);
+        emit errorMessage(replyErrorMessage(reply, body));
         return;
       }
       const QJsonDocument doc = QJsonDocument::fromJson(body);
       if (doc.isObject()) {
         const QString message = doc.object().value("message").toString();
-        emit statusChanged(message.isEmpty() ? "历史加载失败: 响应格式错误" : message, false);
+        emit statusChanged("历史加载失败", false);
+        emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
         return;
       }
       if (!doc.isArray()) {
-        emit statusChanged("历史加载失败: 响应格式错误", false);
+        emit statusChanged("历史加载失败", false);
+        emit errorMessage("响应格式错误");
         return;
       }
       QVector<Candle> candles;
@@ -1327,6 +1420,7 @@ signals:
   void overlayEventsLoaded(const QJsonArray &events);
   void candleUpdated(const Candle &candle);
   void statusChanged(const QString &status, bool live);
+  void errorMessage(const QString &message);
 
 private:
   static Candle parseCandle(const QJsonObject &obj) {
@@ -1373,19 +1467,22 @@ private:
       const QByteArray body = reply->readAll();
       reply->deleteLater();
       if (reply->error() != QNetworkReply::NoError) {
-        emit statusChanged("策略事件加载失败: " + replyErrorMessage(reply, body), false);
+        emit statusChanged("策略事件加载失败", false);
+        emit errorMessage(replyErrorMessage(reply, body));
         emit overlayEventsLoaded({});
         return;
       }
       const QJsonDocument doc = QJsonDocument::fromJson(body);
       if (doc.isObject()) {
         const QString message = doc.object().value("message").toString();
-        emit statusChanged(message.isEmpty() ? "策略事件加载失败: 响应格式错误" : message, false);
+        emit statusChanged("策略事件加载失败", false);
+        emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
         emit overlayEventsLoaded({});
         return;
       }
       if (!doc.isArray()) {
-        emit statusChanged("策略事件加载失败: 响应格式错误", false);
+        emit statusChanged("策略事件加载失败", false);
+        emit errorMessage("响应格式错误");
         emit overlayEventsLoaded({});
         return;
       }
@@ -1836,6 +1933,10 @@ private:
       events_->setText(QString("Events %1").arg(events.size()));
     });
     connect(&client_, &CandleClient::candleUpdated, chart_, &ChartWidget::upsertCandle);
+    connect(&client_, &CandleClient::errorMessage, this, [this](const QString &message) {
+      if (message.trimmed().isEmpty()) chart_->clearMessage();
+      else chart_->showMessage(message.trimmed());
+    });
     connect(chart_, &ChartWidget::olderCandlesRequested, &client_, &CandleClient::loadOlder);
     connect(chart_, &ChartWidget::overlayRangeChanged, &client_, &CandleClient::loadOverlayRange);
     connect(chart_, &ChartWidget::visibleRangeChanged, this, [this](qint64 startMs, qint64 endMs, int firstIndex, int lastIndex) {
@@ -1869,33 +1970,17 @@ private:
 
   void toggleMaximized() {
     const bool restoring = maximizedAnimated_ || isMaximized();
-    QRect target;
     if (restoring) {
-      target = normalGeometry_.isValid() ? normalGeometry_ : QRect(120, 80, 1440, 860);
+      if (normalGeometry_.isValid()) setGeometry(normalGeometry_);
+      showNormal();
+      maximizedAnimated_ = false;
     } else {
       normalGeometry_ = geometry();
-      target = screen() ? screen()->availableGeometry() : QApplication::primaryScreen()->availableGeometry();
+      const QRect target = screen() ? screen()->availableGeometry() : QApplication::primaryScreen()->availableGeometry();
+      setGeometry(target);
+      maximizedAnimated_ = true;
     }
-    animateWindowGeometry(target, [this, restoring] {
-      if (isMaximized()) showNormal();
-      maximizedAnimated_ = !restoring;
-      if (maximize_) maximize_->setText(maximizedAnimated_ ? "❐" : "□");
-    });
-  }
-
-  void animateWindowGeometry(const QRect &target, std::function<void()> finished) {
-    if (windowAnimation_) windowAnimation_->stop();
-    windowAnimation_ = new QPropertyAnimation(this, "geometry", this);
-    windowAnimation_->setDuration(180);
-    windowAnimation_->setEasingCurve(QEasingCurve::Linear);
-    windowAnimation_->setStartValue(geometry());
-    windowAnimation_->setEndValue(target);
-    connect(windowAnimation_, &QPropertyAnimation::finished, this, [this, finished = std::move(finished)] {
-      if (finished) finished();
-      windowAnimation_->deleteLater();
-      windowAnimation_ = nullptr;
-    });
-    windowAnimation_->start();
+    if (maximize_) maximize_->setText(maximizedAnimated_ ? "❐" : "□");
   }
 
   QString darkCss() const {
@@ -2223,6 +2308,7 @@ private:
   void refresh() {
     events_->setText("Events --");
     range_->setText("Visible Range --");
+    chart_->clearMessage();
     chart_->setOverlayEvents({});
     client_.load(symbol_->text(), interval_->currentText(), higher_->currentText(), lower_->currentText());
   }
