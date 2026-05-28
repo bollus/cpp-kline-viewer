@@ -42,28 +42,32 @@ static qint64 intervalMs(const QString &interval) {
   return values.value(interval, 60000);
 }
 
-static void loadBundledFonts() {
+static QString loadBundledFonts() {
   const QStringList roots{
     QCoreApplication::applicationDirPath() + "/fonts",
     QCoreApplication::applicationDirPath() + "/../fonts",
     QDir::currentPath() + "/cpp-kline-viewer/fonts",
     QDir::currentPath() + "/fonts"
   };
-  QStringList files;
+  QString preferredFamily;
   for (const QString &root : roots) {
     QDir dir(root);
     if (!dir.exists()) continue;
-    files << dir.entryList({"*.ttf", "*.otf"}, QDir::Files);
     QDir staticDir(dir.filePath("static"));
     if (staticDir.exists()) {
       for (const QString &file : staticDir.entryList({"*.ttf", "*.otf"}, QDir::Files)) {
-        QFontDatabase::addApplicationFont(staticDir.filePath(file));
+        const int id = QFontDatabase::addApplicationFont(staticDir.filePath(file));
+        const QStringList families = QFontDatabase::applicationFontFamilies(id);
+        if (preferredFamily.isEmpty() && !families.isEmpty()) preferredFamily = families.first();
       }
     }
     for (const QString &file : dir.entryList({"*.ttf", "*.otf"}, QDir::Files)) {
-      QFontDatabase::addApplicationFont(dir.filePath(file));
+      const int id = QFontDatabase::addApplicationFont(dir.filePath(file));
+      const QStringList families = QFontDatabase::applicationFontFamilies(id);
+      if (preferredFamily.isEmpty() && !families.isEmpty()) preferredFamily = families.first();
     }
   }
+  return preferredFamily.isEmpty() ? "Chiron GoRound TC" : preferredFamily;
 }
 
 class ChartWidget : public QOpenGLWidget {
@@ -1822,9 +1826,9 @@ private:
     status_ = new QLabel("连接中");
     status_->setObjectName("status");
     symbol_->setFixedWidth(132);
-    interval_->setFixedWidth(70);
-    settings_->setFixedWidth(73);
-    backend_->setFixedWidth(85);
+    interval_->setFixedWidth(73);
+    settings_->setFixedWidth(75);
+    backend_->setFixedWidth(88);
     theme_->setFixedWidth(34);
     refresh_->setFixedWidth(56);
     status_->setFixedWidth(120);
@@ -2385,7 +2389,11 @@ private:
 
 int main(int argc, char **argv) {
   QApplication app(argc, argv);
-  loadBundledFonts();
+  const QString appFontFamily = loadBundledFonts();
+  QFont appFont(appFontFamily);
+  appFont.setPixelSize(13);
+  appFont.setWeight(QFont::Normal);
+  app.setFont(appFont);
   MainWindow window;
   window.show();
   return app.exec();

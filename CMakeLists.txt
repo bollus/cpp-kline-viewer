@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets OpenGLWidgets)
 
-qt_add_executable(q4j_kline_viewer
+qt_add_executable(q4j_kline_viewer WIN32
   src/main.cpp
 )
 
