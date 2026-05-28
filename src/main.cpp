@@ -145,7 +145,7 @@ protected:
     if (dragging_) {
       const int dx = event->position().x() - dragStart_.x();
       const int dy = event->position().y() - dragStart_.y();
-      const int deltaBars = static_cast<int>(std::round(-dx / std::max(1.0, barStep())));
+      const int deltaBars = static_cast<int>(std::round(-dx / std::max(0.05, barStep())));
       visibleStart_ = std::clamp(dragVisibleStart_ + deltaBars, 0, maxVisibleStart());
       manualPriceOffset_ = dragPriceOffset_ + dy * dragPriceRange_ / std::max(1.0, plotRect().height());
       requestMoreIfNeeded();
@@ -155,7 +155,7 @@ protected:
     }
     if (xAxisScaling_) {
       const int dx = event->position().x() - dragStart_.x();
-      visibleCount_ = std::clamp(static_cast<int>(std::round(axisVisibleCount_ * std::exp(dx / 220.0))), 12, std::max(40, candleCount() + rightOffsetBars_));
+      visibleCount_ = std::clamp(static_cast<int>(std::round(axisVisibleCount_ * std::exp(dx / 480.0))), 20, std::max(40, candleCount() + rightOffsetBars_));
       visibleStart_ = std::clamp(axisVisibleStart_, 0, maxVisibleStart());
       emitOverlayRange();
       update();
@@ -224,8 +224,8 @@ protected:
   void wheelEvent(QWheelEvent *event) override {
     if (candles_.isEmpty()) return;
     const int before = visibleCount_;
-    const double factor = event->angleDelta().y() > 0 ? 0.86 : 1.16;
-    visibleCount_ = std::clamp(static_cast<int>(std::round(visibleCount_ * factor)), 12, std::max(40, candleCount() + rightOffsetBars_));
+    const double factor = event->angleDelta().y() > 0 ? 0.94 : 1.065;
+    visibleCount_ = std::clamp(static_cast<int>(std::round(visibleCount_ * factor)), 20, std::max(40, candleCount() + rightOffsetBars_));
     const int mouseIndex = indexAt(event->position().x());
     if (mouseIndex >= 0) {
       const double ratio = (event->position().x() - plotRect().left()) / std::max(1.0, plotRect().width());
@@ -268,7 +268,7 @@ private:
 
   int indexAt(double x) const {
     if (candles_.isEmpty() || !plotRect().contains(QPointF(x, plotRect().center().y()))) return -1;
-    const int local = static_cast<int>((x - plotRect().left()) / std::max(1.0, barStep()));
+    const int local = static_cast<int>(std::round((x - plotRect().left()) / std::max(0.05, barStep()) - 0.5));
     const int index = visibleStart_ + local;
     return index >= 0 && index < candleCount() ? index : -1;
   }
@@ -334,10 +334,11 @@ private:
     axisFont.setPixelSize(10);
     axisFont.setWeight(QFont::DemiBold);
     p.setFont(axisFont);
-    for (int i = 0; i <= 5; ++i) {
-      const double y = r.top() + r.height() * i / 5.0;
+    const int yTicks = 10;
+    for (int i = 0; i <= yTicks; ++i) {
+      const double y = r.top() + r.height() * i / yTicks;
       p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
-      const double price = maxPrice - (maxPrice - minPrice) * i / 5.0;
+      const double price = maxPrice - (maxPrice - minPrice) * i / yTicks;
       p.setPen(muted());
       p.drawText(QRectF(r.right() + 8, y - 8, 62, 16), Qt::AlignVCenter | Qt::AlignLeft, QString::number(price, 'f', price > 100 ? 0 : 2));
       p.setPen(QPen(grid(), 1));
@@ -364,7 +365,7 @@ private:
     visibleRange(minPrice, maxPrice);
     const QRectF r = plotRect();
     const double step = barStep();
-    const double bodyWidth = std::clamp(step * 0.58, 2.0, 10.0);
+    const double bodyWidth = std::min(std::max(1.0, step * 0.72), std::max(1.0, step - 2.0));
     const int end = std::min(candleCount(), visibleStart_ + visibleCount_);
     for (int i = visibleStart_; i < end; ++i) {
       const Candle &c = candles_[i];
@@ -383,6 +384,10 @@ private:
   }
 
   QPointF pointAt(int index, double price, double minPrice, double maxPrice) const {
+    return pointAtIndex(index, price, minPrice, maxPrice);
+  }
+
+  QPointF pointAtIndex(double index, double price, double minPrice, double maxPrice) const {
     const QRectF r = plotRect();
     const double x = r.left() + (index - visibleStart_ + 0.5) * barStep();
     return QPointF(x, yFor(price, minPrice, maxPrice));
@@ -441,8 +446,25 @@ private:
 
   QPointF pointAtTime(qint64 ms, double price, double minPrice, double maxPrice) const {
     if (candles_.isEmpty()) return {};
-    const int index = indexAtTime(ms);
-    return pointAt(index, price, minPrice, maxPrice);
+    return pointAtIndex(indexForTime(ms), price, minPrice, maxPrice);
+  }
+
+  double indexForTime(qint64 ms) const {
+    if (candles_.isEmpty()) return -1.0;
+    if (ms <= candles_.first().ms) return 0.0;
+    if (ms > candles_.last().ms) {
+      const qint64 step = barIntervalMs();
+      return candleCount() - 1 + double(ms - candles_.last().ms) / std::max<qint64>(1, step);
+    }
+    const auto it = std::lower_bound(candles_.begin(), candles_.end(), ms, [](const Candle &c, qint64 t) {
+      return c.ms < t;
+    });
+    if (it == candles_.end()) return candleCount() - 1;
+    const int next = static_cast<int>(std::distance(candles_.begin(), it));
+    if (it->ms == ms || next == 0) return next;
+    const int prev = next - 1;
+    const qint64 span = std::max<qint64>(1, candles_[next].ms - candles_[prev].ms);
+    return prev + double(ms - candles_[prev].ms) / span;
   }
 
   int indexAtTime(qint64 ms) const {
@@ -455,12 +477,8 @@ private:
       return c.ms < t;
     });
     int index = 0;
-    if (it == candles_.end()) {
-      index = candleCount() - 1;
-    } else {
-      index = static_cast<int>(std::distance(candles_.begin(), it));
-      if (it->ms != ms && index > 0) --index;
-    }
+    if (it == candles_.end()) index = candleCount() - 1;
+    else index = static_cast<int>(std::distance(candles_.begin(), it));
     return std::clamp(index, 0, candleCount() - 1);
   }
 
@@ -566,8 +584,8 @@ private:
     drawn.insert(key);
     QRectF box(pointAtTime(start, top, minPrice, maxPrice), pointAtTime(end, bottom, minPrice, maxPrice));
     box = box.normalized();
-    p.fillRect(box, QColor(110, 215, 246, 87));
-    p.setPen(QPen(QColor(46, 211, 183, 224), 1));
+    p.fillRect(box, QColor(110, 215, 246, 72));
+    p.setPen(QPen(QColor(37, 99, 235, 224), 1));
     p.drawRect(box);
     p.drawText(box.topLeft() + QPointF(4, -4), "iFVG");
   }
