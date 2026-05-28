@@ -55,12 +55,18 @@ public:
 
   void setCandles(QVector<Candle> candles) {
     candles_ = std::move(candles);
+    overlayEvents_ = {};
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
       return a.ms < b.ms;
     });
     if (visibleCount_ <= 0) visibleCount_ = std::min(160, candleCount());
     visibleStart_ = maxVisibleStart();
     hoveredIndex_ = -1;
+    update();
+  }
+
+  void setOverlayEvents(const QJsonArray &events) {
+    overlayEvents_ = events;
     update();
   }
 
@@ -283,104 +289,122 @@ private:
   }
 
   void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
-    if (candles_.size() < 12) return;
-    const int start = visibleStart_;
-    const int end = visibleEnd();
-    if (end - start < 8) return;
-
-    double high = std::numeric_limits<double>::lowest();
-    double low = std::numeric_limits<double>::max();
-    for (int i = start; i < end; ++i) {
-      high = std::max(high, candles_[i].high);
-      low = std::min(low, candles_[i].low);
-    }
-
-    const QRectF r = plotRect();
+    if (overlayEvents_.isEmpty() || candles_.isEmpty()) return;
     QFont label = font();
     label.setPixelSize(10);
     label.setWeight(QFont::DemiBold);
     p.setFont(label);
 
-    if (rangeVisible_) {
-      const double yHigh = yFor(high, minPrice, maxPrice);
-      const double yLow = yFor(low, minPrice, maxPrice);
-      p.setPen(QPen(QColor(114, 217, 247, 170), 1, Qt::DashLine));
-      p.drawLine(QPointF(r.left(), yHigh), QPointF(r.right(), yHigh));
-      p.drawLine(QPointF(r.left(), yLow), QPointF(r.right(), yLow));
-      p.setPen(QColor("#72d9f7"));
-      p.drawText(QPointF(r.left() + 8, yHigh - 5), "Range High");
-      p.drawText(QPointF(r.left() + 8, yLow + 13), "Range Low");
+    for (const QJsonValue &value : overlayEvents_) {
+      const QJsonObject event = value.toObject();
+      const QString type = event.value("eventType").toString();
+      const QJsonObject payload = parsePayload(event);
+      if (rangeVisible_ && type == "RANGE_BOUNDARY_UPDATED") drawRangeEvent(p, payload, minPrice, maxPrice);
+      if (nVisible_ && type == "HIGH_N_DETECTED") drawNEvent(p, payload.value("n").toObject(), QColor(240, 182, 79, 220), "N", minPrice, maxPrice);
+      if (ninVisible_ && type == "HIGH_N_IN_DETECTED") {
+        drawNEvent(p, payload.value("base_n").toObject(), QColor(230, 226, 211, 120), "Base", minPrice, maxPrice);
+        drawNEvent(p, payload.value("signal_n").toObject(), QColor(39, 212, 177, 220), "N-IN", minPrice, maxPrice);
+      }
+      if (ifvgVisible_ && (type == "ENTRY_SIGNAL_OPEN_SENT" || type == "POSITION_OPEN_FILLED")) drawIfvgEvent(p, payload, minPrice, maxPrice);
+      if (orderVisible_ && type == "POSITION_OPEN_FILLED") drawPositionEvent(p, payload, event, minPrice, maxPrice);
     }
+  }
 
-    if (nVisible_) {
-      QVector<QPointF> pts;
-      const int a = start + (end - start) / 6;
-      const int b = start + (end - start) / 3;
-      const int c = start + (end - start) / 2;
-      const int d = start + (end - start) * 2 / 3;
-      pts << pointAt(a, candles_[a].low, minPrice, maxPrice)
-          << pointAt(b, candles_[b].high, minPrice, maxPrice)
-          << pointAt(c, candles_[c].low, minPrice, maxPrice)
-          << pointAt(d, candles_[d].high, minPrice, maxPrice);
-      p.setPen(QPen(QColor(240, 182, 79, 210), 2));
-      p.drawPolyline(pts.constData(), pts.size());
-      p.drawText(pts.last() + QPointF(6, -6), "N");
-    }
+  QJsonObject parsePayload(const QJsonObject &event) const {
+    const QString raw = event.value("payloadJson").toString();
+    const QJsonDocument doc = QJsonDocument::fromJson(raw.toUtf8());
+    return doc.isObject() ? doc.object() : QJsonObject{};
+  }
 
-    if (ninVisible_) {
-      QVector<QPointF> pts;
-      const int a = start + (end - start) / 2;
-      const int b = start + (end - start) * 5 / 8;
-      const int c = start + (end - start) * 3 / 4;
-      const int d = std::min(end - 1, start + (end - start) * 7 / 8);
-      pts << pointAt(a, candles_[a].high, minPrice, maxPrice)
-          << pointAt(b, candles_[b].low, minPrice, maxPrice)
-          << pointAt(c, candles_[c].high, minPrice, maxPrice)
-          << pointAt(d, candles_[d].low, minPrice, maxPrice);
-      p.setPen(QPen(QColor(39, 212, 177, 210), 2));
-      p.drawPolyline(pts.constData(), pts.size());
-      p.drawText(pts.last() + QPointF(6, 12), "N-IN");
-    }
+  QPointF pointAtTime(qint64 ms, double price, double minPrice, double maxPrice) const {
+    if (candles_.isEmpty()) return {};
+    const auto it = std::lower_bound(candles_.begin(), candles_.end(), ms, [](const Candle &c, qint64 t) {
+      return c.ms < t;
+    });
+    int index = it == candles_.end() ? candleCount() - 1 : static_cast<int>(std::distance(candles_.begin(), it));
+    index = std::clamp(index, 0, candleCount() - 1);
+    return pointAt(index, price, minPrice, maxPrice);
+  }
 
-    if (ifvgVisible_) {
-      const int a = start + (end - start) * 3 / 5;
-      const int b = std::min(end - 1, a + std::max(4, (end - start) / 10));
-      const double top = high - (high - low) * 0.32;
-      const double bottom = high - (high - low) * 0.42;
-      QRectF box(pointAt(a, top, minPrice, maxPrice), pointAt(b, bottom, minPrice, maxPrice));
-      box = box.normalized();
-      p.fillRect(box, QColor(114, 217, 247, 58));
-      p.setPen(QPen(QColor(39, 212, 177, 190), 1));
-      p.drawRect(box);
-      p.drawText(box.topLeft() + QPointF(4, -4), "iFVG");
-    }
+  qint64 jsonMs(const QJsonValue &value) const {
+    return static_cast<qint64>(value.toDouble());
+  }
 
-    if (orderVisible_) {
-      const int a = start + (end - start) * 4 / 5;
-      const int b = std::min(end - 1, a + std::max(5, (end - start) / 8));
-      const double entry = candles_[a].close;
-      const double risk = (high - low) * 0.08;
-      const double target = entry + risk * 1.8;
-      const double stop = entry - risk;
-      QRectF reward(pointAt(a, target, minPrice, maxPrice), pointAt(b, entry, minPrice, maxPrice));
-      QRectF danger(pointAt(a, entry, minPrice, maxPrice), pointAt(b, stop, minPrice, maxPrice));
+  void drawRangeEvent(QPainter &p, const QJsonObject &payload, double minPrice, double maxPrice) {
+    const QJsonObject point = payload.value("point").toObject();
+    const double price = point.value("price").toDouble(std::numeric_limits<double>::quiet_NaN());
+    if (!std::isfinite(price)) return;
+    const qint64 start = jsonMs(point.value("display_time").isUndefined() ? point.value("time") : point.value("display_time"));
+    const qint64 end = candles_.isEmpty() ? start : candles_.last().ms;
+    const QPointF a = pointAtTime(start, price, minPrice, maxPrice);
+    const QPointF b = pointAtTime(end, price, minPrice, maxPrice);
+    p.setPen(QPen(QColor(114, 217, 247, 170), 1, Qt::DashLine));
+    p.drawLine(a, b);
+    p.setPen(QColor("#72d9f7"));
+    p.drawText(a + QPointF(4, -5), point.value("side").toString("Range"));
+  }
+
+  void drawNEvent(QPainter &p, const QJsonObject &n, const QColor &color, const QString &label, double minPrice, double maxPrice) {
+    if (n.isEmpty()) return;
+    QVector<QPointF> pts;
+    auto add = [&](const QString &timeKey, const QString &fallbackTimeKey, const QString &priceKey) {
+      const qint64 t = jsonMs(n.value(timeKey).isUndefined() ? n.value(fallbackTimeKey) : n.value(timeKey));
+      const double price = n.value(priceKey).toDouble(std::numeric_limits<double>::quiet_NaN());
+      if (t > 0 && std::isfinite(price)) pts << pointAtTime(t, price, minPrice, maxPrice);
+    };
+    add("anchor_display_time", "anchor_time", "anchor_price");
+    add("turning_display_time", "turning_time", "turning_price");
+    add("retrace_display_time", "retrace_time", "retrace_price");
+    add("breakout_time", "breakout_time", "breakout_close");
+    if (pts.size() < 2) return;
+    p.setPen(QPen(color, 2));
+    p.drawPolyline(pts.constData(), pts.size());
+    p.drawText(pts.last() + QPointF(6, -6), label);
+  }
+
+  void drawIfvgEvent(QPainter &p, const QJsonObject &payload, double minPrice, double maxPrice) {
+    const QJsonObject signal = payload.value("entry_signal").toObject();
+    const QJsonObject fvg = signal.value("fvg").toObject();
+    if (fvg.isEmpty()) return;
+    const double top = fvg.value("top").toDouble(std::numeric_limits<double>::quiet_NaN());
+    const double bottom = fvg.value("bottom").toDouble(std::numeric_limits<double>::quiet_NaN());
+    const qint64 start = jsonMs(fvg.value("k1_time").isUndefined() ? fvg.value("create_time") : fvg.value("k1_time"));
+    const qint64 end = jsonMs(fvg.value("ifvg_time").isUndefined() ? signal.value("time") : fvg.value("ifvg_time"));
+    if (!std::isfinite(top) || !std::isfinite(bottom) || start <= 0 || end <= 0) return;
+    QRectF box(pointAtTime(start, top, minPrice, maxPrice), pointAtTime(end, bottom, minPrice, maxPrice));
+    box = box.normalized();
+    p.fillRect(box, QColor(114, 217, 247, 58));
+    p.setPen(QPen(QColor(39, 212, 177, 190), 1));
+    p.drawRect(box);
+    p.drawText(box.topLeft() + QPointF(4, -4), "iFVG");
+  }
+
+  void drawPositionEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, double minPrice, double maxPrice) {
+    const qint64 start = jsonMs(payload.value("entry_time").isUndefined() ? event.value("eventTime") : payload.value("entry_time"));
+    const qint64 end = candles_.isEmpty() ? start : candles_.last().ms;
+    const double entry = payload.value("exec_price").toDouble(payload.value("entry").toDouble(event.value("price").toDouble(std::numeric_limits<double>::quiet_NaN())));
+    const double sl = payload.value("sl").toDouble(std::numeric_limits<double>::quiet_NaN());
+    const double tp1 = payload.value("tp1").toDouble(std::numeric_limits<double>::quiet_NaN());
+    if (start <= 0 || !std::isfinite(entry)) return;
+    if (std::isfinite(tp1)) {
+      QRectF reward(pointAtTime(start, tp1, minPrice, maxPrice), pointAtTime(end, entry, minPrice, maxPrice));
       p.fillRect(reward.normalized(), QColor(32, 201, 151, 60));
-      p.fillRect(danger.normalized(), QColor(239, 95, 120, 62));
-      p.setPen(QPen(dark_ ? QColor(244, 239, 227, 225) : QColor(55, 65, 81, 245), 1));
-      p.drawLine(pointAt(a, entry, minPrice, maxPrice), pointAt(b, entry, minPrice, maxPrice));
-      p.drawText(pointAt(b, entry, minPrice, maxPrice) + QPointF(6, 4), "Entry");
     }
-
+    if (std::isfinite(sl)) {
+      QRectF danger(pointAtTime(start, entry, minPrice, maxPrice), pointAtTime(end, sl, minPrice, maxPrice));
+      p.fillRect(danger.normalized(), QColor(239, 95, 120, 62));
+    }
+    const QPointF a = pointAtTime(start, entry, minPrice, maxPrice);
+    const QPointF b = pointAtTime(end, entry, minPrice, maxPrice);
+    p.setPen(QPen(dark_ ? QColor(244, 239, 227, 225) : QColor(55, 65, 81, 245), 1));
+    p.drawLine(a, b);
+    p.drawText(b + QPointF(6, 4), "Entry");
     if (markerVisible_) {
-      const int idx = start + (end - start) * 4 / 5;
-      const QPointF pos = pointAt(idx, candles_[idx].low, minPrice, maxPrice) + QPointF(0, 14);
       QPolygonF arrow;
-      arrow << QPointF(pos.x(), pos.y() - 10) << QPointF(pos.x() - 5, pos.y()) << QPointF(pos.x() + 5, pos.y());
+      arrow << QPointF(a.x(), a.y() - 10) << QPointF(a.x() - 5, a.y()) << QPointF(a.x() + 5, a.y());
       p.setBrush(up());
       p.setPen(Qt::NoPen);
       p.drawPolygon(arrow);
-      p.setPen(up());
-      p.drawText(pos + QPointF(8, 2), "L");
     }
   }
 
@@ -469,6 +493,7 @@ private:
   }
 
   QVector<Candle> candles_;
+  QJsonArray overlayEvents_;
   bool dark_ = true;
   bool rangeVisible_ = true;
   bool nVisible_ = true;
@@ -508,9 +533,11 @@ public:
     socket_.close();
   }
 
-  void load(const QString &symbol, const QString &interval) {
+  void load(const QString &symbol, const QString &interval, const QString &higherInterval, const QString &lowerInterval) {
     symbol_ = symbol.trimmed();
     interval_ = interval.trimmed();
+    higherInterval_ = higherInterval.trimmed();
+    lowerInterval_ = lowerInterval.trimmed();
     if (backendBase_.isEmpty()) {
       emit statusChanged("后端未配置", false);
       return;
@@ -541,12 +568,14 @@ public:
         candles.push_back(parseCandle(obj));
       }
       emit candlesLoaded(candles);
+      fetchOverlayEvents();
       connectSocket();
     });
   }
 
 signals:
   void candlesLoaded(const QVector<Candle> &candles);
+  void overlayEventsLoaded(const QJsonArray &events);
   void candleUpdated(const Candle &candle);
   void statusChanged(const QString &status, bool live);
 
@@ -571,6 +600,34 @@ private:
     socket_.open(url);
   }
 
+  void fetchOverlayEvents() {
+    if (symbol_.isEmpty() || higherInterval_.isEmpty() || lowerInterval_.isEmpty()) {
+      emit overlayEventsLoaded({});
+      return;
+    }
+    const qint64 end = QDateTime::currentMSecsSinceEpoch() + intervalMs(interval_) * 20;
+    const qint64 start = end - intervalMs(interval_) * 360;
+    QUrl url(backendBase_ + "/api/strategy-overlay-events");
+    QUrlQuery query;
+    query.addQueryItem("strategy", "n_in_range_variant");
+    query.addQueryItem("symbol", symbol_);
+    query.addQueryItem("higherInterval", higherInterval_);
+    query.addQueryItem("lowerInterval", lowerInterval_);
+    query.addQueryItem("startTime", QString::number(start));
+    query.addQueryItem("endTime", QString::number(end));
+    url.setQuery(query);
+    QNetworkReply *reply = network_.get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+      reply->deleteLater();
+      if (reply->error() != QNetworkReply::NoError) {
+        emit overlayEventsLoaded({});
+        return;
+      }
+      const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+      emit overlayEventsLoaded(doc.isArray() ? doc.array() : QJsonArray{});
+    });
+  }
+
   void onSocketMessage(const QString &message) {
     const QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
     if (!doc.isObject()) return;
@@ -581,6 +638,8 @@ private:
   QString wsBase_;
   QString symbol_;
   QString interval_;
+  QString higherInterval_;
+  QString lowerInterval_;
   QNetworkAccessManager network_;
   QWebSocket socket_;
 };
@@ -750,6 +809,10 @@ private:
     });
     connect(settings_, &QPushButton::clicked, settingsDialog_, &QDialog::show);
     connect(&client_, &CandleClient::candlesLoaded, chart_, &ChartWidget::setCandles);
+    connect(&client_, &CandleClient::overlayEventsLoaded, chart_, &ChartWidget::setOverlayEvents);
+    connect(&client_, &CandleClient::overlayEventsLoaded, this, [this](const QJsonArray &events) {
+      events_->setText(QString("Events %1").arg(events.size()));
+    });
     connect(&client_, &CandleClient::candleUpdated, chart_, &ChartWidget::upsertCandle);
     connect(&client_, &CandleClient::statusChanged, this, [this](const QString &status, bool live) {
       status_->setText((live ? "● " : "○ ") + status);
@@ -871,7 +934,9 @@ private:
   }
 
   void refresh() {
-    client_.load(symbol_->text(), interval_->currentText());
+    events_->setText("Events --");
+    chart_->setOverlayEvents({});
+    client_.load(symbol_->text(), interval_->currentText(), higher_->currentText(), lower_->currentText());
   }
 
   ChartWidget *chart_ = nullptr;
