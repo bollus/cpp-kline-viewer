@@ -905,15 +905,15 @@ private:
 
   void paintLayerHints(QPainter &p) {
     QFont f = font();
-    f.setPixelSize(11);
+    f.setPixelSize(12);
     f.setWeight(QFont::DemiBold);
     p.setFont(f);
-    int y = 24;
+    int y = 28;
     auto row = [&](bool visible, const QString &name) {
       p.setPen(visible ? text() : QColor(muted().red(), muted().green(), muted().blue(), 115));
-      p.drawText(14, y, visible ? "◉" : "◌");
-      p.drawText(34, y, name);
-      y += 18;
+      p.drawText(16, y, visible ? "◉" : "◌");
+      p.drawText(40, y, name);
+      y += 24;
     };
     row(rangeVisible_, "Range");
     row(nVisible_, "N");
@@ -972,8 +972,8 @@ private:
   }
 
   bool toggleLayerAt(const QPointF &point) {
-    if (point.x() < 12 || point.x() > 170 || point.y() < 12 || point.y() > 136) return false;
-    const int row = static_cast<int>((point.y() - 16) / 18);
+    if (point.x() < 8 || point.x() > 210 || point.y() < 10 || point.y() > 156) return false;
+    const int row = static_cast<int>((point.y() - 14) / 24);
     switch (row) {
       case 0: rangeVisible_ = !rangeVisible_; return true;
       case 1: nVisible_ = !nVisible_; return true;
@@ -1080,7 +1080,7 @@ private:
     p.drawRect(panel);
 
     QFont label = font();
-    label.setPixelSize(9);
+    label.setPixelSize(11);
     label.setWeight(QFont::Black);
     p.setFont(label);
     p.setPen(QColor("#f0b64f"));
@@ -1098,7 +1098,7 @@ private:
     p.drawRect(body);
 
     QFont nums = font();
-    nums.setPixelSize(10);
+    nums.setPixelSize(12);
     nums.setWeight(QFont::DemiBold);
     p.setFont(nums);
     p.setPen(muted());
@@ -1207,12 +1207,25 @@ public:
 
     QNetworkReply *reply = network_.get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
+      const QByteArray body = reply->readAll();
       reply->deleteLater();
       if (reply->error() != QNetworkReply::NoError) {
-        emit statusChanged("加载失败", false);
+        emit statusChanged("加载失败: " + replyErrorMessage(reply, body), false);
         return;
       }
-      const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+      const QJsonDocument doc = QJsonDocument::fromJson(body);
+      if (doc.isObject()) {
+        const QString message = doc.object().value("message").toString();
+        emit statusChanged(message.isEmpty() ? "加载失败: 响应格式错误" : message, false);
+        emit candlesLoaded({});
+        emit overlayEventsLoaded({});
+        socket_.close();
+        return;
+      }
+      if (!doc.isArray()) {
+        emit statusChanged("加载失败: 响应格式错误", false);
+        return;
+      }
       QVector<Candle> candles;
       for (const QJsonValue &value : doc.array()) {
         const QJsonObject obj = value.toObject();
@@ -1240,10 +1253,23 @@ public:
     url.setQuery(query);
     QNetworkReply *reply = network_.get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this, [this, reply, start, end] {
+      const QByteArray body = reply->readAll();
       reply->deleteLater();
       loadingOlder_ = false;
-      if (reply->error() != QNetworkReply::NoError) return;
-      const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+      if (reply->error() != QNetworkReply::NoError) {
+        emit statusChanged("历史加载失败: " + replyErrorMessage(reply, body), false);
+        return;
+      }
+      const QJsonDocument doc = QJsonDocument::fromJson(body);
+      if (doc.isObject()) {
+        const QString message = doc.object().value("message").toString();
+        emit statusChanged(message.isEmpty() ? "历史加载失败: 响应格式错误" : message, false);
+        return;
+      }
+      if (!doc.isArray()) {
+        emit statusChanged("历史加载失败: 响应格式错误", false);
+        return;
+      }
       QVector<Candle> candles;
       for (const QJsonValue &value : doc.array()) candles.push_back(parseCandle(value.toObject()));
       if (candles.isEmpty()) return;
@@ -1309,17 +1335,41 @@ private:
     url.setQuery(query);
     QNetworkReply *reply = network_.get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this, [this, reply, start, end] {
+      const QByteArray body = reply->readAll();
       reply->deleteLater();
       if (reply->error() != QNetworkReply::NoError) {
+        emit statusChanged("策略事件加载失败: " + replyErrorMessage(reply, body), false);
         emit overlayEventsLoaded({});
         return;
       }
-      const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+      const QJsonDocument doc = QJsonDocument::fromJson(body);
+      if (doc.isObject()) {
+        const QString message = doc.object().value("message").toString();
+        emit statusChanged(message.isEmpty() ? "策略事件加载失败: 响应格式错误" : message, false);
+        emit overlayEventsLoaded({});
+        return;
+      }
+      if (!doc.isArray()) {
+        emit statusChanged("策略事件加载失败: 响应格式错误", false);
+        emit overlayEventsLoaded({});
+        return;
+      }
       overlayLoadedStartMs_ = overlayLoadedStartMs_ == 0 ? start : std::min(overlayLoadedStartMs_, start);
       overlayLoadedEndMs_ = std::max(overlayLoadedEndMs_, end);
       mergeOverlayEvents(doc.isArray() ? doc.array() : QJsonArray{});
       emit overlayEventsLoaded(overlayEvents_);
     });
+  }
+
+  QString replyErrorMessage(QNetworkReply *reply, const QByteArray &body) const {
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (doc.isObject()) {
+      const QString message = doc.object().value("message").toString().trimmed();
+      if (!message.isEmpty()) return message;
+    }
+    const QString text = QString::fromUtf8(body).trimmed();
+    if (!text.isEmpty() && text.size() < 240) return text;
+    return reply->errorString();
   }
 
   void updateKnownRange(const QVector<Candle> &candles) {
@@ -1420,7 +1470,97 @@ protected:
     return QMainWindow::eventFilter(watched, event);
   }
 
+  void mousePressEvent(QMouseEvent *event) override {
+    if (event->button() == Qt::LeftButton) {
+      const Qt::Edges edges = resizeEdgesAt(event->position().toPoint());
+      if (edges != Qt::Edges{}) {
+        resizingWindow_ = true;
+        resizeEdges_ = edges;
+        resizeStartPos_ = event->globalPosition().toPoint();
+        resizeStartGeometry_ = geometry();
+        event->accept();
+        return;
+      }
+    }
+    QMainWindow::mousePressEvent(event);
+  }
+
+  void mouseMoveEvent(QMouseEvent *event) override {
+    if (resizingWindow_) {
+      resizeWindowTo(event->globalPosition().toPoint());
+      event->accept();
+      return;
+    }
+    updateResizeCursor(event->position().toPoint());
+    QMainWindow::mouseMoveEvent(event);
+  }
+
+  void mouseReleaseEvent(QMouseEvent *event) override {
+    if (event->button() == Qt::LeftButton && resizingWindow_) {
+      resizingWindow_ = false;
+      resizeEdges_ = {};
+      unsetCursor();
+      event->accept();
+      return;
+    }
+    QMainWindow::mouseReleaseEvent(event);
+  }
+
+  void leaveEvent(QEvent *event) override {
+    if (!resizingWindow_) unsetCursor();
+    QMainWindow::leaveEvent(event);
+  }
+
 private:
+  Qt::Edges resizeEdgesAt(const QPoint &pos) const {
+    if (isMaximized()) return {};
+    constexpr int margin = 7;
+    Qt::Edges edges;
+    if (pos.x() <= margin) edges |= Qt::LeftEdge;
+    if (pos.x() >= width() - margin) edges |= Qt::RightEdge;
+    if (pos.y() <= margin) edges |= Qt::TopEdge;
+    if (pos.y() >= height() - margin) edges |= Qt::BottomEdge;
+    return edges;
+  }
+
+  void updateResizeCursor(const QPoint &pos) {
+    const Qt::Edges edges = resizeEdgesAt(pos);
+    if ((edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::TopEdge)) ||
+        (edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::BottomEdge))) {
+      setCursor(Qt::SizeFDiagCursor);
+    } else if ((edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::TopEdge)) ||
+               (edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::BottomEdge))) {
+      setCursor(Qt::SizeBDiagCursor);
+    } else if (edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge)) {
+      setCursor(Qt::SizeHorCursor);
+    } else if (edges.testFlag(Qt::TopEdge) || edges.testFlag(Qt::BottomEdge)) {
+      setCursor(Qt::SizeVerCursor);
+    } else {
+      unsetCursor();
+    }
+  }
+
+  void resizeWindowTo(const QPoint &globalPos) {
+    QRect next = resizeStartGeometry_;
+    const QPoint delta = globalPos - resizeStartPos_;
+    const QSize min = minimumSize().expandedTo(QSize(980, 620));
+    if (resizeEdges_.testFlag(Qt::LeftEdge)) {
+      const int newLeft = std::min(next.right() - min.width(), next.left() + delta.x());
+      next.setLeft(newLeft);
+    }
+    if (resizeEdges_.testFlag(Qt::RightEdge)) {
+      next.setRight(std::max(next.left() + min.width(), next.right() + delta.x()));
+    }
+    if (resizeEdges_.testFlag(Qt::TopEdge)) {
+      const int newTop = std::min(next.bottom() - min.height(), next.top() + delta.y());
+      next.setTop(newTop);
+    }
+    if (resizeEdges_.testFlag(Qt::BottomEdge)) {
+      next.setBottom(std::max(next.top() + min.height(), next.bottom() + delta.y()));
+    }
+    setGeometry(next);
+  }
+
   void buildUi() {
     auto *root = new QWidget;
     root->setObjectName("appShell");
@@ -1462,28 +1602,15 @@ private:
     headerLayout->setContentsMargins(9, 7, 9, 7);
     headerLayout->setSpacing(8);
 
-    auto *brandBox = new QWidget;
-    brandBox->setObjectName("brandBox");
-    auto *brandLayout = new QHBoxLayout(brandBox);
-    brandLayout->setContentsMargins(0, 0, 20, 0);
-    brandLayout->setSpacing(8);
-    auto *badge = new QLabel("Q4J");
-    badge->setObjectName("brandBadge");
-    auto *brandText = new QLabel("MARKET STRUCTURE DESK\nExecution Map");
-    brandText->setObjectName("brandText");
-    brandLayout->addWidget(badge);
-    brandLayout->addWidget(brandText);
-    headerLayout->addWidget(brandBox);
-
-    symbol_ = new QLineEdit("JP225");
+    symbol_ = new QLineEdit("XAUUSD");
     symbol_->setObjectName("symbolInput");
     symbol_->setPlaceholderText("Symbol");
     interval_ = new QComboBox;
     interval_->setObjectName("intervalInput");
-    interval_->addItems({"1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d"});
+    interval_->addItems({"1M", "2M", "3M", "5M", "10M", "15M", "30M", "1H", "4H", "1D"});
     settings_ = new QPushButton("策略设置");
     settings_->setObjectName("toolButton");
-    backend_ = new QPushButton("后端");
+    backend_ = new QPushButton("服务端设置");
     backend_->setObjectName("toolButton");
     theme_ = new QPushButton("☾");
     theme_->setObjectName("iconButton");
@@ -1497,7 +1624,7 @@ private:
     backend_->setFixedWidth(48);
     theme_->setFixedWidth(34);
     refresh_->setFixedWidth(56);
-    status_->setFixedWidth(86);
+    status_->setFixedWidth(120);
     headerLayout->addWidget(symbol_);
     headerLayout->addWidget(interval_);
     headerLayout->addWidget(settings_);
@@ -1531,9 +1658,14 @@ private:
   void buildSettingsDialog() {
     settingsDialog_ = new QDialog(this);
     settingsDialog_->setWindowTitle("策略设置");
+    settingsDialog_->setMinimumSize(360, 220);
     auto *layout = new QFormLayout(settingsDialog_);
+    layout->setContentsMargins(22, 20, 22, 18);
+    layout->setSpacing(14);
     higher_ = new QComboBox;
     lower_ = new QComboBox;
+    higher_->setMinimumHeight(34);
+    lower_->setMinimumHeight(34);
     higher_->addItems({"15m", "30m", "1h", "4h"});
     lower_->addItems({"1m", "2m", "3m", "5m", "10m", "15m"});
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Apply);
@@ -1550,12 +1682,18 @@ private:
   void buildBackendDialog() {
     backendDialog_ = new QDialog(this);
     backendDialog_->setWindowTitle("后端接口");
+    backendDialog_->setMinimumSize(520, 260);
     auto *layout = new QVBoxLayout(backendDialog_);
+    layout->setContentsMargins(22, 20, 22, 18);
+    layout->setSpacing(14);
     auto *form = new QFormLayout;
+    form->setSpacing(14);
     backendUrl_ = new QLineEdit(client_.backendBase());
     wsUrl_ = new QLineEdit(client_.wsBase());
     realtime_ = new QCheckBox("启用实时 K 线");
     realtime_->setChecked(client_.realtimeEnabled());
+    backendUrl_->setMinimumHeight(34);
+    wsUrl_->setMinimumHeight(34);
     backendUrl_->setPlaceholderText("http://127.0.0.1:8080");
     wsUrl_->setPlaceholderText("留空则从 HTTP 地址自动推导");
     form->addRow("HTTP 后端", backendUrl_);
@@ -1653,7 +1791,7 @@ private:
 
   QString darkCss() const {
     return R"(
-      QWidget { background: #080c0b; color: #f4efe3; font-family: "Roboto Flex", "SF Pro Text", "Segoe UI", "PingFang SC"; font-size: 12px; }
+      QWidget { background: #080c0b; color: #f4efe3; font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC"; font-size: 13px; }
       QMainWindow { background: #080c0b; }
       QWidget#appShell {
         background: #080c0b;
@@ -1669,14 +1807,14 @@ private:
         min-width: 30px; max-width: 30px; min-height: 20px; max-height: 20px;
         background: #f0b64f;
         color: #111813;
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 950;
         qproperty-alignment: AlignCenter;
       }
       QLabel#titleText {
         background: transparent;
         color: #f4efe3;
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 850;
       }
       QPushButton#windowButton, QPushButton#closeButton {
@@ -1686,7 +1824,7 @@ private:
         border-radius: 2px;
         padding: 0;
         color: #a7b0a8;
-        font-size: 14px;
+        font-size: 15px;
         font-weight: 850;
       }
       QPushButton#windowButton:hover { background: rgba(230, 226, 211, 22); border-color: rgba(230, 226, 211, 44); color: #f4efe3; }
@@ -1703,14 +1841,14 @@ private:
         border-radius: 2px;
         background: #22251a;
         color: #f0b64f;
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 900;
         qproperty-alignment: AlignCenter;
       }
       QLabel#brandText {
         background: transparent;
         color: #f4efe3;
-        font-size: 17px;
+        font-size: 18px;
         font-weight: 850;
       }
       QLineEdit, QComboBox, QPushButton {
@@ -1721,7 +1859,7 @@ private:
         padding: 0 8px;
         font-weight: 750;
       }
-      QLineEdit#symbolInput { font-size: 13px; font-weight: 850; }
+      QLineEdit#symbolInput { font-size: 14px; font-weight: 850; }
       QLineEdit#symbolInput {
         min-height: 28px; max-height: 28px;
         background: #111815;
@@ -1740,7 +1878,7 @@ private:
         border-radius: 1px;
         padding: 0 18px 0 9px;
         color: #f4efe3;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 900;
       }
       QComboBox#intervalInput::drop-down {
@@ -1760,7 +1898,7 @@ private:
         border-radius: 1px;
         padding: 0 9px;
         color: #d9d4c7;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 850;
       }
       QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
@@ -1777,7 +1915,7 @@ private:
         border-radius: 1px;
         padding: 0;
         color: #f0b64f;
-        font-size: 14px;
+        font-size: 15px;
         font-weight: 900;
       }
       QPushButton#refreshButton { background: #f0b64f; border-color: #f0b64f; color: #111813; }
@@ -1785,15 +1923,25 @@ private:
         min-height: 28px; max-height: 28px;
         border-radius: 1px;
         padding: 0 8px;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 900;
       }
       QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #f0b64f; }
       QLabel#status {
         background: transparent;
         color: #a7b0a8;
+        font-size: 13px;
         font-weight: 800;
         qproperty-alignment: AlignCenter;
+      }
+      QFrame#footer QLabel {
+        background: transparent;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      QDialog QLabel, QDialog QCheckBox {
+        font-size: 13px;
+        font-weight: 650;
       }
       QDialog {
         background: #0e1311;
@@ -1804,7 +1952,7 @@ private:
 
   QString lightCss() const {
     return R"(
-      QWidget { background: #eef0eb; color: #131916; font-family: "Roboto Flex", "SF Pro Text", "Segoe UI", "PingFang SC"; font-size: 12px; }
+      QWidget { background: #eef0eb; color: #131916; font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC"; font-size: 13px; }
       QMainWindow { background: #eef0eb; }
       QWidget#appShell {
         background: #eef0eb;
@@ -1820,14 +1968,14 @@ private:
         min-width: 30px; max-width: 30px; min-height: 20px; max-height: 20px;
         background: #f0b64f;
         color: #111813;
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 950;
         qproperty-alignment: AlignCenter;
       }
       QLabel#titleText {
         background: transparent;
         color: #131916;
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 850;
       }
       QPushButton#windowButton, QPushButton#closeButton {
@@ -1837,7 +1985,7 @@ private:
         border-radius: 2px;
         padding: 0;
         color: #59635d;
-        font-size: 14px;
+        font-size: 15px;
         font-weight: 850;
       }
       QPushButton#windowButton:hover { background: rgba(23, 31, 27, 22); border-color: rgba(23, 31, 27, 44); color: #131916; }
@@ -1854,14 +2002,14 @@ private:
         border-radius: 2px;
         background: #f4ecd9;
         color: #b27a17;
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 900;
         qproperty-alignment: AlignCenter;
       }
       QLabel#brandText {
         background: transparent;
         color: #131916;
-        font-size: 17px;
+        font-size: 18px;
         font-weight: 850;
       }
       QLineEdit, QComboBox, QPushButton {
@@ -1872,7 +2020,7 @@ private:
         padding: 0 8px;
         font-weight: 750;
       }
-      QLineEdit#symbolInput { font-size: 13px; font-weight: 850; }
+      QLineEdit#symbolInput { font-size: 14px; font-weight: 850; }
       QLineEdit#symbolInput {
         min-height: 28px; max-height: 28px;
         background: #fffdf7;
@@ -1891,7 +2039,7 @@ private:
         border-radius: 1px;
         padding: 0 18px 0 9px;
         color: #131916;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 900;
       }
       QComboBox#intervalInput::drop-down {
@@ -1911,7 +2059,7 @@ private:
         border-radius: 1px;
         padding: 0 9px;
         color: #3b443e;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 850;
       }
       QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
@@ -1928,7 +2076,7 @@ private:
         border-radius: 1px;
         padding: 0;
         color: #b27a17;
-        font-size: 14px;
+        font-size: 15px;
         font-weight: 900;
       }
       QPushButton#refreshButton { background: #f0b64f; border-color: #d79b2f; color: #111813; }
@@ -1936,15 +2084,25 @@ private:
         min-height: 28px; max-height: 28px;
         border-radius: 1px;
         padding: 0 8px;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 900;
       }
       QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #b27a17; }
       QLabel#status {
         background: transparent;
         color: #59635d;
+        font-size: 13px;
         font-weight: 800;
         qproperty-alignment: AlignCenter;
+      }
+      QFrame#footer QLabel {
+        background: transparent;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      QDialog QLabel, QDialog QCheckBox {
+        font-size: 13px;
+        font-weight: 650;
       }
       QDialog {
         background: #fffdf7;
@@ -1985,6 +2143,10 @@ private:
   CandleClient client_;
   bool dark_ = true;
   bool windowDragging_ = false;
+  bool resizingWindow_ = false;
+  Qt::Edges resizeEdges_;
+  QPoint resizeStartPos_;
+  QRect resizeStartGeometry_;
   QPoint windowDragStart_;
 };
 
