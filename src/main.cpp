@@ -3,6 +3,7 @@
 #include <QtWebSockets/QWebSocket>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 
 struct Candle {
@@ -161,7 +162,10 @@ protected:
     if (xAxisScaling_) {
       const int dx = event->position().x() - dragStart_.x();
       visibleCount_ = std::clamp(static_cast<int>(std::round(axisVisibleCount_ * std::exp(dx / 480.0))), 20, std::max(40, candleCount() + rightOffsetBars_));
-      visibleStart_ = std::clamp(axisVisibleStart_, 0, maxVisibleStart());
+      const double newStep = plotRect().width() / std::max(1, visibleCount_);
+      const double newLocalIndex = axisAnchorLocalX_ / std::max(0.05, newStep) - 0.5;
+      visibleStart_ = static_cast<int>(std::round(axisAnchorIndex_ - newLocalIndex));
+      visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
       emitOverlayRange();
       emitVisibleRange();
       update();
@@ -208,6 +212,8 @@ protected:
       dragStart_ = event->position().toPoint();
       axisVisibleCount_ = visibleCount_;
       axisVisibleStart_ = visibleStart_;
+      axisAnchorLocalX_ = std::clamp(event->position().x() - plotRect().left(), 0.0, plotRect().width());
+      axisAnchorIndex_ = visibleStart_ + axisAnchorLocalX_ / std::max(0.05, barStep()) - 0.5;
       return;
     }
     dragging_ = true;
@@ -230,12 +236,17 @@ protected:
   void wheelEvent(QWheelEvent *event) override {
     if (candles_.isEmpty()) return;
     const int before = visibleCount_;
+    const QRectF plot = plotRect();
+    const double oldStep = plot.width() / std::max(1, visibleCount_);
+    const double anchorLocalX = std::clamp(event->position().x() - plot.left(), 0.0, plot.width());
+    const bool anchorInPlot = plot.contains(event->position());
+    const double anchorIndex = visibleStart_ + anchorLocalX / std::max(0.05, oldStep) - 0.5;
     const double factor = event->angleDelta().y() > 0 ? 0.94 : 1.065;
     visibleCount_ = std::clamp(static_cast<int>(std::round(visibleCount_ * factor)), 20, std::max(40, candleCount() + rightOffsetBars_));
-    const int mouseIndex = indexAt(event->position().x());
-    if (mouseIndex >= 0) {
-      const double ratio = (event->position().x() - plotRect().left()) / std::max(1.0, plotRect().width());
-      visibleStart_ = mouseIndex - static_cast<int>(ratio * visibleCount_);
+    if (anchorInPlot) {
+      const double newStep = plot.width() / std::max(1, visibleCount_);
+      const double newLocalIndex = anchorLocalX / std::max(0.05, newStep) - 0.5;
+      visibleStart_ = static_cast<int>(std::round(anchorIndex - newLocalIndex));
     } else if (before != visibleCount_) {
       visibleStart_ += (before - visibleCount_) / 2;
     }
@@ -338,7 +349,7 @@ private:
     const QRectF r = plotRect();
     p.setPen(QPen(grid(), 1));
     QFont axisFont = font();
-    axisFont.setPixelSize(10);
+    axisFont.setPixelSize(12);
     axisFont.setWeight(QFont::DemiBold);
     p.setFont(axisFont);
     const int yTicks = 10;
@@ -347,7 +358,7 @@ private:
       p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
       const double price = maxPrice - (maxPrice - minPrice) * i / yTicks;
       p.setPen(muted());
-      p.drawText(QRectF(r.right() + 8, y - 8, 62, 16), Qt::AlignVCenter | Qt::AlignLeft, QString::number(price, 'f', price > 100 ? 0 : 2));
+      p.drawText(QRectF(r.right() + 8, y - 9, 66, 18), Qt::AlignVCenter | Qt::AlignLeft, QString::number(price, 'f', price > 100 ? 0 : 2));
       p.setPen(QPen(grid(), 1));
     }
     for (int i = 0; i <= 8; ++i) {
@@ -357,7 +368,7 @@ private:
       if (candleIndex >= 0 && candleIndex < candleCount()) {
         const QString label = QDateTime::fromMSecsSinceEpoch(candles_[candleIndex].ms).toString("MM-dd HH:mm");
         p.setPen(muted());
-        p.drawText(QRectF(x - 42, r.bottom() + 8, 84, 16), Qt::AlignCenter, label);
+        p.drawText(QRectF(x - 48, r.bottom() + 8, 96, 18), Qt::AlignCenter, label);
         p.setPen(QPen(grid(), 1));
       }
     }
@@ -911,7 +922,7 @@ private:
     int y = 28;
     auto row = [&](bool visible, const QString &name) {
       p.setPen(visible ? text() : QColor(muted().red(), muted().green(), muted().blue(), 115));
-      p.drawText(16, y, visible ? "◉" : "◌");
+      drawEyeIcon(p, QRectF(14, y - 15, 20, 16), visible);
       p.drawText(40, y, name);
       y += 24;
     };
@@ -921,6 +932,28 @@ private:
     row(ifvgVisible_, "iFVG");
     row(orderVisible_, "Order");
     row(markerVisible_, "Marker");
+  }
+
+  void drawEyeIcon(QPainter &p, const QRectF &rect, bool visible) {
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor color = visible ? text() : QColor(muted().red(), muted().green(), muted().blue(), 125);
+    QPainterPath eye;
+    eye.moveTo(rect.left() + 1, rect.center().y());
+    eye.cubicTo(rect.left() + 5, rect.top() + 1, rect.right() - 5, rect.top() + 1, rect.right() - 1, rect.center().y());
+    eye.cubicTo(rect.right() - 5, rect.bottom() - 1, rect.left() + 5, rect.bottom() - 1, rect.left() + 1, rect.center().y());
+    p.setPen(QPen(color, 1.5));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(eye);
+    if (visible) {
+      p.setBrush(color);
+      p.setPen(Qt::NoPen);
+      p.drawEllipse(rect.center(), 3.2, 3.2);
+    } else {
+      p.setPen(QPen(color, 1.6));
+      p.drawLine(rect.bottomLeft() + QPointF(2, -1), rect.topRight() + QPointF(-2, 1));
+    }
+    p.restore();
   }
 
   struct PositionHitbox {
@@ -1007,7 +1040,7 @@ private:
     p.drawRect(rect);
     p.setPen(QColor("#111813"));
     QFont f = font();
-    f.setPixelSize(10);
+    f.setPixelSize(11);
     f.setWeight(QFont::DemiBold);
     p.setFont(f);
     p.drawText(rect, Qt::AlignCenter, text);
@@ -1074,7 +1107,7 @@ private:
     const Candle &c = candles_[hoveredIndex_];
     const bool green = c.close >= c.open;
     const QColor color = green ? up() : down();
-    QRectF panel(width() - 244, 18, 142, 150);
+    QRectF panel(width() - 284, 18, 176, 150);
     p.setPen(QPen(dark_ ? QColor(230, 226, 211, 34) : QColor(23, 31, 27, 34), 1));
     p.setBrush(dark_ ? QColor(14, 19, 17, 178) : QColor(255, 253, 247, 210));
     p.drawRect(panel);
@@ -1090,7 +1123,7 @@ private:
     const double bodyTop = panel.top() + 58;
     const double bodyBottom = panel.top() + 96;
     const double bottom = panel.bottom() - 16;
-    const double cx = panel.right() - 52;
+    const double cx = panel.center().x();
     p.setPen(QPen(color, 2));
     p.drawLine(QPointF(cx, top), QPointF(cx, bottom));
     QRectF body(cx - 11, bodyTop, 22, bodyBottom - bodyTop);
@@ -1102,13 +1135,13 @@ private:
     nums.setWeight(QFont::DemiBold);
     p.setFont(nums);
     p.setPen(muted());
-    p.drawText(QPointF(panel.left() + 8, green ? bodyBottom + 3 : bodyTop + 3), QString("O %1").arg(c.open));
+    p.drawText(QPointF(panel.left() + 10, green ? bodyBottom + 3 : bodyTop + 3), QString("O %1").arg(c.open));
     p.setPen(color);
-    p.drawText(QPointF(panel.left() + 8, green ? bodyTop + 3 : bodyBottom + 3), QString("C %1").arg(c.close));
+    p.drawText(QPointF(panel.left() + 10, green ? bodyTop + 3 : bodyBottom + 3), QString("C %1").arg(c.close));
     p.setPen(QColor("#f0b64f"));
-    p.drawText(QPointF(panel.right() - 44, top + 3), QString("H %1").arg(c.high));
+    p.drawText(QPointF(panel.right() - 72, top + 3), QString("H %1").arg(c.high));
     p.setPen(QColor("#72d9f7"));
-    p.drawText(QPointF(panel.right() - 44, bottom + 3), QString("L %1").arg(c.low));
+    p.drawText(QPointF(panel.right() - 72, bottom + 3), QString("L %1").arg(c.low));
   }
 
   QVector<Candle> candles_;
@@ -1140,6 +1173,8 @@ private:
   int dragVisibleStart_ = 0;
   int axisVisibleCount_ = 160;
   int axisVisibleStart_ = 0;
+  double axisAnchorIndex_ = 0.0;
+  double axisAnchorLocalX_ = 0.0;
   double manualPriceScale_ = 1.0;
   double axisPriceScale_ = 1.0;
   double manualPriceOffset_ = 0.0;
@@ -1428,6 +1463,7 @@ public:
   MainWindow() {
     setWindowTitle("Q4J Market Structure Desk");
     setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
+    setMouseTracking(true);
     resize(1440, 860);
     buildUi();
     bindSignals();
@@ -1459,7 +1495,7 @@ protected:
       }
       if (event->type() == QEvent::MouseMove && windowDragging_) {
         auto *mouse = static_cast<QMouseEvent *>(event);
-        if (!isMaximized()) move(mouse->globalPosition().toPoint() - windowDragStart_);
+        if (!maximizedAnimated_ && !isMaximized()) move(mouse->globalPosition().toPoint() - windowDragStart_);
         return true;
       }
       if (event->type() == QEvent::MouseButtonRelease) {
@@ -1467,17 +1503,32 @@ protected:
         return true;
       }
     }
+    if (watched == centralWidget() || watched == chart_ || watched == header_ || watched == footer_) {
+      if (auto *mouse = dynamic_cast<QMouseEvent *>(event)) {
+        const QPoint global = mouse->globalPosition().toPoint();
+        const QPoint local = mapFromGlobal(global);
+        if (event->type() == QEvent::MouseButtonPress && mouse->button() == Qt::LeftButton) {
+          if (startWindowResize(local, global)) return true;
+        }
+        if (event->type() == QEvent::MouseMove) {
+          if (resizingWindow_) {
+            resizeWindowTo(global);
+            return true;
+          }
+          updateResizeCursor(local, qobject_cast<QWidget *>(watched));
+        }
+        if (event->type() == QEvent::MouseButtonRelease && resizingWindow_) {
+          finishWindowResize(qobject_cast<QWidget *>(watched));
+          return true;
+        }
+      }
+    }
     return QMainWindow::eventFilter(watched, event);
   }
 
   void mousePressEvent(QMouseEvent *event) override {
     if (event->button() == Qt::LeftButton) {
-      const Qt::Edges edges = resizeEdgesAt(event->position().toPoint());
-      if (edges != Qt::Edges{}) {
-        resizingWindow_ = true;
-        resizeEdges_ = edges;
-        resizeStartPos_ = event->globalPosition().toPoint();
-        resizeStartGeometry_ = geometry();
+      if (startWindowResize(event->position().toPoint(), event->globalPosition().toPoint())) {
         event->accept();
         return;
       }
@@ -1491,15 +1542,13 @@ protected:
       event->accept();
       return;
     }
-    updateResizeCursor(event->position().toPoint());
+    updateResizeCursor(event->position().toPoint(), this);
     QMainWindow::mouseMoveEvent(event);
   }
 
   void mouseReleaseEvent(QMouseEvent *event) override {
     if (event->button() == Qt::LeftButton && resizingWindow_) {
-      resizingWindow_ = false;
-      resizeEdges_ = {};
-      unsetCursor();
+      finishWindowResize(this);
       event->accept();
       return;
     }
@@ -1513,7 +1562,7 @@ protected:
 
 private:
   Qt::Edges resizeEdgesAt(const QPoint &pos) const {
-    if (isMaximized()) return {};
+    if (maximizedAnimated_ || isMaximized()) return {};
     constexpr int margin = 7;
     Qt::Edges edges;
     if (pos.x() <= margin) edges |= Qt::LeftEdge;
@@ -1523,21 +1572,47 @@ private:
     return edges;
   }
 
-  void updateResizeCursor(const QPoint &pos) {
-    const Qt::Edges edges = resizeEdgesAt(pos);
+  QCursor cursorForEdges(Qt::Edges edges) const {
     if ((edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::TopEdge)) ||
         (edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::BottomEdge))) {
-      setCursor(Qt::SizeFDiagCursor);
-    } else if ((edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::TopEdge)) ||
-               (edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::BottomEdge))) {
-      setCursor(Qt::SizeBDiagCursor);
-    } else if (edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge)) {
-      setCursor(Qt::SizeHorCursor);
-    } else if (edges.testFlag(Qt::TopEdge) || edges.testFlag(Qt::BottomEdge)) {
-      setCursor(Qt::SizeVerCursor);
+      return Qt::SizeFDiagCursor;
+    }
+    if ((edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::TopEdge)) ||
+        (edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::BottomEdge))) {
+      return Qt::SizeBDiagCursor;
+    }
+    if (edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge)) return Qt::SizeHorCursor;
+    if (edges.testFlag(Qt::TopEdge) || edges.testFlag(Qt::BottomEdge)) return Qt::SizeVerCursor;
+    return Qt::ArrowCursor;
+  }
+
+  void updateResizeCursor(const QPoint &pos, QWidget *source) {
+    const Qt::Edges edges = resizeEdgesAt(pos);
+    if (edges != Qt::Edges{}) {
+      const QCursor cursor = cursorForEdges(edges);
+      setCursor(cursor);
+      if (source) source->setCursor(cursor);
     } else {
       unsetCursor();
+      if (source) source->unsetCursor();
     }
+  }
+
+  bool startWindowResize(const QPoint &localPos, const QPoint &globalPos) {
+    const Qt::Edges edges = resizeEdgesAt(localPos);
+    if (edges == Qt::Edges{}) return false;
+    resizingWindow_ = true;
+    resizeEdges_ = edges;
+    resizeStartPos_ = globalPos;
+    resizeStartGeometry_ = geometry();
+    return true;
+  }
+
+  void finishWindowResize(QWidget *source) {
+    resizingWindow_ = false;
+    resizeEdges_ = {};
+    unsetCursor();
+    if (source) source->unsetCursor();
   }
 
   void resizeWindowTo(const QPoint &globalPos) {
@@ -1564,6 +1639,8 @@ private:
   void buildUi() {
     auto *root = new QWidget;
     root->setObjectName("appShell");
+    root->setMouseTracking(true);
+    root->installEventFilter(this);
     auto *layout = new QVBoxLayout(root);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
@@ -1598,6 +1675,9 @@ private:
 
     auto *header = new QFrame;
     header->setObjectName("header");
+    header_ = header;
+    header_->setMouseTracking(true);
+    header_->installEventFilter(this);
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(9, 7, 9, 7);
     headerLayout->setSpacing(8);
@@ -1621,7 +1701,7 @@ private:
     symbol_->setFixedWidth(132);
     interval_->setFixedWidth(62);
     settings_->setFixedWidth(70);
-    backend_->setFixedWidth(48);
+    backend_->setFixedWidth(80);
     theme_->setFixedWidth(34);
     refresh_->setFixedWidth(56);
     status_->setFixedWidth(120);
@@ -1636,10 +1716,14 @@ private:
     layout->addWidget(header);
 
     chart_ = new ChartWidget;
+    chart_->installEventFilter(this);
     layout->addWidget(chart_, 1);
 
     auto *footer = new QFrame;
     footer->setObjectName("footer");
+    footer_ = footer;
+    footer_->setMouseTracking(true);
+    footer_->installEventFilter(this);
     auto *footerLayout = new QHBoxLayout(footer);
     footerLayout->setContentsMargins(8, 6, 8, 6);
     footerLayout->setSpacing(16);
@@ -1778,15 +1862,40 @@ private:
   void applyTheme() {
     chart_->setDark(dark_);
     theme_->setText(dark_ ? "☾" : "☀");
-    if (maximize_) maximize_->setText(isMaximized() ? "❐" : "□");
+    if (maximize_) maximize_->setText((maximizedAnimated_ || isMaximized()) ? "❐" : "□");
     const QString css = dark_ ? darkCss() : lightCss();
     qApp->setStyleSheet(css);
   }
 
   void toggleMaximized() {
-    if (isMaximized()) showNormal();
-    else showMaximized();
-    if (maximize_) maximize_->setText(isMaximized() ? "❐" : "□");
+    const bool restoring = maximizedAnimated_ || isMaximized();
+    QRect target;
+    if (restoring) {
+      target = normalGeometry_.isValid() ? normalGeometry_ : QRect(120, 80, 1440, 860);
+    } else {
+      normalGeometry_ = geometry();
+      target = screen() ? screen()->availableGeometry() : QApplication::primaryScreen()->availableGeometry();
+    }
+    animateWindowGeometry(target, [this, restoring] {
+      if (isMaximized()) showNormal();
+      maximizedAnimated_ = !restoring;
+      if (maximize_) maximize_->setText(maximizedAnimated_ ? "❐" : "□");
+    });
+  }
+
+  void animateWindowGeometry(const QRect &target, std::function<void()> finished) {
+    if (windowAnimation_) windowAnimation_->stop();
+    windowAnimation_ = new QPropertyAnimation(this, "geometry", this);
+    windowAnimation_->setDuration(180);
+    windowAnimation_->setEasingCurve(QEasingCurve::Linear);
+    windowAnimation_->setStartValue(geometry());
+    windowAnimation_->setEndValue(target);
+    connect(windowAnimation_, &QPropertyAnimation::finished, this, [this, finished = std::move(finished)] {
+      if (finished) finished();
+      windowAnimation_->deleteLater();
+      windowAnimation_ = nullptr;
+    });
+    windowAnimation_->start();
   }
 
   QString darkCss() const {
@@ -2120,6 +2229,8 @@ private:
 
   ChartWidget *chart_ = nullptr;
   QFrame *titleBar_ = nullptr;
+  QFrame *header_ = nullptr;
+  QFrame *footer_ = nullptr;
   QLineEdit *symbol_ = nullptr;
   QComboBox *interval_ = nullptr;
   QComboBox *higher_ = nullptr;
@@ -2148,6 +2259,9 @@ private:
   QPoint resizeStartPos_;
   QRect resizeStartGeometry_;
   QPoint windowDragStart_;
+  QRect normalGeometry_;
+  bool maximizedAnimated_ = false;
+  QPropertyAnimation *windowAnimation_ = nullptr;
 };
 
 int main(int argc, char **argv) {
