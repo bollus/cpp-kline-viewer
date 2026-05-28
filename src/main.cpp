@@ -2,6 +2,7 @@
 #include <QtNetwork>
 #include <QtWebSockets/QWebSocket>
 #include <QOpenGLWidget>
+#include <QFontDatabase>
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -39,6 +40,30 @@ static qint64 intervalMs(const QString &interval) {
     {"1d", 86400000}, {"1w", 604800000}
   };
   return values.value(interval, 60000);
+}
+
+static void loadBundledFonts() {
+  const QStringList roots{
+    QCoreApplication::applicationDirPath() + "/fonts",
+    QCoreApplication::applicationDirPath() + "/../fonts",
+    QDir::currentPath() + "/cpp-kline-viewer/fonts",
+    QDir::currentPath() + "/fonts"
+  };
+  QStringList files;
+  for (const QString &root : roots) {
+    QDir dir(root);
+    if (!dir.exists()) continue;
+    files << dir.entryList({"*.ttf", "*.otf"}, QDir::Files);
+    QDir staticDir(dir.filePath("static"));
+    if (staticDir.exists()) {
+      for (const QString &file : staticDir.entryList({"*.ttf", "*.otf"}, QDir::Files)) {
+        QFontDatabase::addApplicationFont(staticDir.filePath(file));
+      }
+    }
+    for (const QString &file : dir.entryList({"*.ttf", "*.otf"}, QDir::Files)) {
+      QFontDatabase::addApplicationFont(dir.filePath(file));
+    }
+  }
 }
 
 class ChartWidget : public QOpenGLWidget {
@@ -1992,7 +2017,7 @@ private:
 
   QString darkCss() const {
     return R"(
-      QWidget { background: #080c0b; color: #f4efe3; font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC"; font-size: 13px; }
+      QWidget { background: #080c0b; color: #f4efe3; font-family: "Chiron GoRound TC", "Microsoft YaHei UI", "PingFang SC"; font-size: 13px; }
       QMainWindow { background: #080c0b; }
       QWidget#appShell {
         background: #080c0b;
@@ -2009,14 +2034,14 @@ private:
         background: #f0b64f;
         color: #111813;
         font-size: 11px;
-        font-weight: 950;
+        font-weight: 500;
         qproperty-alignment: AlignCenter;
       }
       QLabel#titleText {
         background: transparent;
         color: #f4efe3;
         font-size: 14px;
-        font-weight: 850;
+        font-weight: 600;
       }
       QPushButton#windowButton, QPushButton#closeButton {
         min-height: 24px; max-height: 24px;
@@ -2026,7 +2051,7 @@ private:
         padding: 0;
         color: #a7b0a8;
         font-size: 15px;
-        font-weight: 850;
+        font-weight: 600;
       }
       QPushButton#windowButton:hover { background: rgba(230, 226, 211, 22); border-color: rgba(230, 226, 211, 44); color: #f4efe3; }
       QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
@@ -2043,14 +2068,14 @@ private:
         background: #22251a;
         color: #f0b64f;
         font-size: 11px;
-        font-weight: 900;
+        font-weight: 500;
         qproperty-alignment: AlignCenter;
       }
       QLabel#brandText {
         background: transparent;
         color: #f4efe3;
         font-size: 18px;
-        font-weight: 850;
+        font-weight: 600;
       }
       QLineEdit, QComboBox, QPushButton {
         min-height: 30px; max-height: 30px;
@@ -2058,9 +2083,9 @@ private:
         border: 1px solid rgba(230, 226, 211, 64);
         border-radius: 2px;
         padding: 0 8px;
-        font-weight: 750;
+        font-weight: 500;
       }
-      QLineEdit#symbolInput { font-size: 14px; font-weight: 850; }
+      QLineEdit#symbolInput { font-size: 14px; font-weight: 600; }
       QLineEdit#symbolInput {
         min-height: 28px; max-height: 28px;
         background: #111815;
@@ -2080,7 +2105,7 @@ private:
         padding: 0 18px 0 9px;
         color: #f4efe3;
         font-size: 13px;
-        font-weight: 900;
+        font-weight: 500;
       }
       QComboBox#intervalInput::drop-down {
         width: 16px;
@@ -2100,7 +2125,7 @@ private:
         padding: 0 9px;
         color: #d9d4c7;
         font-size: 13px;
-        font-weight: 850;
+        font-weight: 600;
       }
       QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
         background: #18211d;
@@ -2117,7 +2142,7 @@ private:
         padding: 0;
         color: #f0b64f;
         font-size: 15px;
-        font-weight: 900;
+        font-weight: 500;
       }
       QPushButton#refreshButton { background: #f0b64f; border-color: #f0b64f; color: #111813; }
       QPushButton#refreshButton {
@@ -2125,24 +2150,24 @@ private:
         border-radius: 1px;
         padding: 0 8px;
         font-size: 13px;
-        font-weight: 900;
+        font-weight: 500;
       }
       QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #f0b64f; }
       QLabel#status {
         background: transparent;
         color: #a7b0a8;
         font-size: 13px;
-        font-weight: 800;
+        font-weight: 600;
         qproperty-alignment: AlignCenter;
       }
       QFrame#footer QLabel {
         background: transparent;
         font-size: 13px;
-        font-weight: 700;
+        font-weight: 500;
       }
       QDialog QLabel, QDialog QCheckBox {
         font-size: 13px;
-        font-weight: 650;
+        font-weight: 500;
       }
       QDialog {
         background: #0e1311;
@@ -2153,7 +2178,7 @@ private:
 
   QString lightCss() const {
     return R"(
-      QWidget { background: #eef0eb; color: #131916; font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC"; font-size: 13px; }
+      QWidget { background: #eef0eb; color: #131916; font-family: "Chiron GoRound TC", "Microsoft YaHei UI", "PingFang SC"; font-size: 13px; }
       QMainWindow { background: #eef0eb; }
       QWidget#appShell {
         background: #eef0eb;
@@ -2170,14 +2195,14 @@ private:
         background: #f0b64f;
         color: #111813;
         font-size: 11px;
-        font-weight: 950;
+        font-weight: 500;
         qproperty-alignment: AlignCenter;
       }
       QLabel#titleText {
         background: transparent;
         color: #131916;
         font-size: 14px;
-        font-weight: 850;
+        font-weight: 600;
       }
       QPushButton#windowButton, QPushButton#closeButton {
         min-height: 24px; max-height: 24px;
@@ -2187,7 +2212,7 @@ private:
         padding: 0;
         color: #59635d;
         font-size: 15px;
-        font-weight: 850;
+        font-weight: 600;
       }
       QPushButton#windowButton:hover { background: rgba(23, 31, 27, 22); border-color: rgba(23, 31, 27, 44); color: #131916; }
       QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
@@ -2204,14 +2229,14 @@ private:
         background: #f4ecd9;
         color: #b27a17;
         font-size: 11px;
-        font-weight: 900;
+        font-weight: 500;
         qproperty-alignment: AlignCenter;
       }
       QLabel#brandText {
         background: transparent;
         color: #131916;
         font-size: 18px;
-        font-weight: 850;
+        font-weight: 600;
       }
       QLineEdit, QComboBox, QPushButton {
         min-height: 30px; max-height: 30px;
@@ -2219,9 +2244,9 @@ private:
         border: 1px solid rgba(23, 31, 27, 62);
         border-radius: 2px;
         padding: 0 8px;
-        font-weight: 750;
+        font-weight: 500;
       }
-      QLineEdit#symbolInput { font-size: 14px; font-weight: 850; }
+      QLineEdit#symbolInput { font-size: 14px; font-weight: 600; }
       QLineEdit#symbolInput {
         min-height: 28px; max-height: 28px;
         background: #fffdf7;
@@ -2241,7 +2266,7 @@ private:
         padding: 0 18px 0 9px;
         color: #131916;
         font-size: 13px;
-        font-weight: 900;
+        font-weight: 500;
       }
       QComboBox#intervalInput::drop-down {
         width: 16px;
@@ -2261,7 +2286,7 @@ private:
         padding: 0 9px;
         color: #3b443e;
         font-size: 13px;
-        font-weight: 850;
+        font-weight: 600;
       }
       QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
         background: #ffffff;
@@ -2278,7 +2303,7 @@ private:
         padding: 0;
         color: #b27a17;
         font-size: 15px;
-        font-weight: 900;
+        font-weight: 500;
       }
       QPushButton#refreshButton { background: #f0b64f; border-color: #d79b2f; color: #111813; }
       QPushButton#refreshButton {
@@ -2286,24 +2311,24 @@ private:
         border-radius: 1px;
         padding: 0 8px;
         font-size: 13px;
-        font-weight: 900;
+        font-weight: 500;
       }
       QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #b27a17; }
       QLabel#status {
         background: transparent;
         color: #59635d;
         font-size: 13px;
-        font-weight: 800;
+        font-weight: 600;
         qproperty-alignment: AlignCenter;
       }
       QFrame#footer QLabel {
         background: transparent;
         font-size: 13px;
-        font-weight: 700;
+        font-weight: 500;
       }
       QDialog QLabel, QDialog QCheckBox {
         font-size: 13px;
-        font-weight: 650;
+        font-weight: 500;
       }
       QDialog {
         background: #fffdf7;
@@ -2360,6 +2385,7 @@ private:
 
 int main(int argc, char **argv) {
   QApplication app(argc, argv);
+  loadBundledFonts();
   MainWindow window;
   window.show();
   return app.exec();
