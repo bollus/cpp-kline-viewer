@@ -82,7 +82,7 @@ public:
     }), candles_.end());
     const int previousIndex = indexAtTime(previousFirst);
     if (previousIndex > 0) visibleStart_ += previousIndex;
-    visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
+    visibleStart_ = std::clamp(visibleStart_, 0.0, maxVisibleStart());
     emitVisibleRange();
     update();
   }
@@ -178,13 +178,13 @@ protected:
     if (dragging_) {
       const int dx = event->position().x() - dragStart_.x();
       const int dy = event->position().y() - dragStart_.y();
-      const int deltaBars = static_cast<int>(std::round(-dx / std::max(0.05, barStep())));
-      visibleStart_ = std::clamp(dragVisibleStart_ + deltaBars, 0, maxVisibleStart());
+      const double deltaBars = -dx / std::max(0.05, barStep());
+      visibleStart_ = std::clamp(dragVisibleStart_ + deltaBars, 0.0, maxVisibleStart());
       manualPriceOffset_ = dragPriceOffset_ + dy * dragPriceRange_ / std::max(1.0, plotRect().height());
       requestMoreIfNeeded();
       emitOverlayRange();
       emitVisibleRange();
-      update();
+      scheduleRepaint();
       return;
     }
     if (xAxisScaling_) {
@@ -192,17 +192,16 @@ protected:
       visibleCount_ = std::clamp(static_cast<int>(std::round(axisVisibleCount_ * std::exp(dx / 480.0))), 20, std::max(40, candleCount() + rightOffsetBars_));
       const double newStep = plotRect().width() / std::max(1, visibleCount_);
       const double newLocalIndex = axisAnchorLocalX_ / std::max(0.05, newStep) - 0.5;
-      visibleStart_ = static_cast<int>(std::round(axisAnchorIndex_ - newLocalIndex));
-      visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
+      visibleStart_ = std::clamp(axisAnchorIndex_ - newLocalIndex, 0.0, maxVisibleStart());
       emitOverlayRange();
       emitVisibleRange();
-      update();
+      scheduleRepaint();
       return;
     }
     if (yAxisScaling_) {
       const int dy = event->position().y() - dragStart_.y();
       manualPriceScale_ = std::clamp(axisPriceScale_ * std::exp(dy / 180.0), 0.2, 8.0);
-      update();
+      scheduleRepaint();
       return;
     }
     hoveredIndex_ = indexAt(event->position().x());
@@ -274,15 +273,15 @@ protected:
     if (anchorInPlot) {
       const double newStep = plot.width() / std::max(1, visibleCount_);
       const double newLocalIndex = anchorLocalX / std::max(0.05, newStep) - 0.5;
-      visibleStart_ = static_cast<int>(std::round(anchorIndex - newLocalIndex));
+      visibleStart_ = anchorIndex - newLocalIndex;
     } else if (before != visibleCount_) {
       visibleStart_ += (before - visibleCount_) / 2;
     }
-    visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
+    visibleStart_ = std::clamp(visibleStart_, 0.0, maxVisibleStart());
     requestMoreIfNeeded();
     emitOverlayRange();
     emitVisibleRange();
-    update();
+    scheduleRepaint();
   }
 
   void mouseDoubleClickEvent(QMouseEvent *event) override {
@@ -314,8 +313,7 @@ private:
 
   int indexAt(double x) const {
     if (candles_.isEmpty() || !plotRect().contains(QPointF(x, plotRect().center().y()))) return -1;
-    const int local = static_cast<int>(std::round((x - plotRect().left()) / std::max(0.05, barStep()) - 0.5));
-    const int index = visibleStart_ + local;
+    const int index = static_cast<int>(std::round(visibleStart_ + (x - plotRect().left()) / std::max(0.05, barStep()) - 0.5));
     return index >= 0 && index < candleCount() ? index : -1;
   }
 
@@ -323,8 +321,8 @@ private:
     return static_cast<int>(candles_.size());
   }
 
-  int maxVisibleStart() const {
-    return std::max(0, candleCount() - visibleCount_ + rightOffsetBars_);
+  double maxVisibleStart() const {
+    return std::max(0.0, double(candleCount() - visibleCount_ + rightOffsetBars_));
   }
 
   QColor bg() const { return dark_ ? QColor("#0b100f") : QColor("#fffefa"); }
@@ -337,8 +335,9 @@ private:
   void visibleRange(double &minPrice, double &maxPrice) const {
     minPrice = std::numeric_limits<double>::max();
     maxPrice = std::numeric_limits<double>::lowest();
-    const int end = std::min(candleCount(), visibleStart_ + visibleCount_);
-    for (int i = visibleStart_; i < end; ++i) {
+    const int start = std::max(0, static_cast<int>(std::floor(visibleStart_)));
+    const int end = std::min(candleCount(), static_cast<int>(std::ceil(visibleStart_ + visibleCount_)));
+    for (int i = start; i < end; ++i) {
       minPrice = std::min(minPrice, candles_[i].low);
       maxPrice = std::max(maxPrice, candles_[i].high);
     }
@@ -424,7 +423,7 @@ private:
     for (int i = 0; i <= 8; ++i) {
       const double x = r.left() + r.width() * i / 8.0;
       p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
-      const int candleIndex = visibleStart_ + static_cast<int>((visibleCount_ - 1) * i / 8.0);
+      const int candleIndex = static_cast<int>(std::round(visibleStart_ + (visibleCount_ - 1) * i / 8.0));
       if (candleIndex >= 0 && candleIndex < candleCount()) {
         const QString label = QDateTime::fromMSecsSinceEpoch(candles_[candleIndex].ms).toString("MM-dd HH:mm");
         p.setPen(muted());
@@ -446,8 +445,9 @@ private:
     const QRectF r = plotRect();
     const double step = barStep();
     const double bodyWidth = std::min(std::max(1.0, step * 0.72), std::max(1.0, step - 2.0));
-    const int end = std::min(candleCount(), visibleStart_ + visibleCount_);
-    for (int i = visibleStart_; i < end; ++i) {
+    const int start = std::max(0, static_cast<int>(std::floor(visibleStart_)) - 1);
+    const int end = std::min(candleCount(), static_cast<int>(std::ceil(visibleStart_ + visibleCount_)) + 1);
+    for (int i = start; i < end; ++i) {
       const Candle &c = candles_[i];
       const double x = r.left() + (i - visibleStart_ + 0.5) * step;
       const QColor color = c.close >= c.open ? up() : down();
@@ -475,7 +475,7 @@ private:
   }
 
   int visibleEnd() const {
-    return std::min(candleCount(), visibleStart_ + visibleCount_);
+    return std::min(candleCount(), static_cast<int>(std::ceil(visibleStart_ + visibleCount_)));
   }
 
   void requestMoreIfNeeded() {
@@ -489,7 +489,7 @@ private:
 
   void emitOverlayRange() {
     if (candles_.isEmpty()) return;
-    const int start = std::clamp(visibleStart_, 0, candleCount() - 1);
+    const int start = std::clamp(static_cast<int>(std::floor(visibleStart_)), 0, candleCount() - 1);
     const int end = std::clamp(visibleEnd() - 1, 0, candleCount() - 1);
     emit overlayRangeChanged(candles_[start].ms, candles_[end].ms + 20 * barIntervalMs());
   }
@@ -499,9 +499,18 @@ private:
       emit visibleRangeChanged(0, 0, -1, -1);
       return;
     }
-    const int start = std::clamp(visibleStart_, 0, candleCount() - 1);
+    const int start = std::clamp(static_cast<int>(std::floor(visibleStart_)), 0, candleCount() - 1);
     const int end = std::clamp(visibleEnd() - 1, 0, candleCount() - 1);
     emit visibleRangeChanged(candles_[start].ms, candles_[end].ms, start, end);
+  }
+
+  void scheduleRepaint() {
+    if (repaintScheduled_) return;
+    repaintScheduled_ = true;
+    QTimer::singleShot(0, this, [this] {
+      repaintScheduled_ = false;
+      update();
+    });
   }
 
   void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
@@ -1222,7 +1231,7 @@ private:
   bool ifvgVisible_ = true;
   bool orderVisible_ = true;
   bool markerVisible_ = true;
-  int visibleStart_ = 0;
+  double visibleStart_ = 0.0;
   int visibleCount_ = 160;
   int rightOffsetBars_ = 40;
   int hoveredIndex_ = -1;
@@ -1234,9 +1243,9 @@ private:
   bool yAxisScaling_ = false;
   bool loadingOlderRequested_ = false;
   QPoint dragStart_;
-  int dragVisibleStart_ = 0;
+  double dragVisibleStart_ = 0.0;
   int axisVisibleCount_ = 160;
-  int axisVisibleStart_ = 0;
+  double axisVisibleStart_ = 0.0;
   double axisAnchorIndex_ = 0.0;
   double axisAnchorLocalX_ = 0.0;
   double manualPriceScale_ = 1.0;
@@ -1244,6 +1253,7 @@ private:
   double manualPriceOffset_ = 0.0;
   double dragPriceOffset_ = 0.0;
   double dragPriceRange_ = 1.0;
+  bool repaintScheduled_ = false;
   QVector<PositionHitbox> positionHitboxes_;
 };
 
