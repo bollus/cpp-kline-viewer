@@ -56,7 +56,7 @@ public:
 
   void setCandles(QVector<Candle> candles) {
     candles_ = std::move(candles);
-    messageText_.clear();
+    if (!candles_.isEmpty()) messageText_.clear();
     overlayEvents_ = {};
     parsedOverlayEvents_.clear();
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
@@ -182,7 +182,6 @@ protected:
       const double newLocalIndex = axisAnchorLocalX_ / std::max(0.05, newStep) - 0.5;
       visibleStart_ = static_cast<int>(std::round(axisAnchorIndex_ - newLocalIndex));
       visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
-      lockCurrentPriceRange();
       emitOverlayRange();
       emitVisibleRange();
       update();
@@ -231,7 +230,6 @@ protected:
       axisVisibleStart_ = visibleStart_;
       axisAnchorLocalX_ = std::clamp(event->position().x() - plotRect().left(), 0.0, plotRect().width());
       axisAnchorIndex_ = visibleStart_ + axisAnchorLocalX_ / std::max(0.05, barStep()) - 0.5;
-      lockCurrentPriceRange();
       return;
     }
     dragging_ = true;
@@ -254,7 +252,6 @@ protected:
   void wheelEvent(QWheelEvent *event) override {
     if (candles_.isEmpty()) return;
     const int before = visibleCount_;
-    lockCurrentPriceRange();
     const QRectF plot = plotRect();
     const double oldStep = plot.width() / std::max(1, visibleCount_);
     const double anchorLocalX = std::clamp(event->position().x() - plot.left(), 0.0, plot.width());
@@ -280,7 +277,6 @@ protected:
     if (event->button() == Qt::LeftButton && priceAxisRect().contains(event->position())) {
       manualPriceScale_ = 1.0;
       manualPriceOffset_ = 0.0;
-      priceRangeLocked_ = false;
       update();
     }
   }
@@ -327,11 +323,6 @@ private:
   QColor down() const { return QColor("#ef5f78"); }
 
   void visibleRange(double &minPrice, double &maxPrice) const {
-    if (priceRangeLocked_ && std::isfinite(lockedMinPrice_) && std::isfinite(lockedMaxPrice_) && lockedMinPrice_ < lockedMaxPrice_) {
-      minPrice = lockedMinPrice_;
-      maxPrice = lockedMaxPrice_;
-      return;
-    }
     minPrice = std::numeric_limits<double>::max();
     maxPrice = std::numeric_limits<double>::lowest();
     const int end = std::min(candleCount(), visibleStart_ + visibleCount_);
@@ -354,28 +345,6 @@ private:
     }
     minPrice += manualPriceOffset_;
     maxPrice += manualPriceOffset_;
-  }
-
-  void autoVisibleRange(double &minPrice, double &maxPrice) const {
-    const bool wasLocked = priceRangeLocked_;
-    const double lockedMin = lockedMinPrice_;
-    const double lockedMax = lockedMaxPrice_;
-    const_cast<ChartWidget *>(this)->priceRangeLocked_ = false;
-    visibleRange(minPrice, maxPrice);
-    const_cast<ChartWidget *>(this)->priceRangeLocked_ = wasLocked;
-    const_cast<ChartWidget *>(this)->lockedMinPrice_ = lockedMin;
-    const_cast<ChartWidget *>(this)->lockedMaxPrice_ = lockedMax;
-  }
-
-  void lockCurrentPriceRange() {
-    double minPrice, maxPrice;
-    if (priceRangeLocked_) visibleRange(minPrice, maxPrice);
-    else autoVisibleRange(minPrice, maxPrice);
-    if (std::isfinite(minPrice) && std::isfinite(maxPrice) && minPrice < maxPrice) {
-      lockedMinPrice_ = minPrice;
-      lockedMaxPrice_ = maxPrice;
-      priceRangeLocked_ = true;
-    }
   }
 
   double yFor(double price, double minPrice, double maxPrice) const {
@@ -1263,9 +1232,6 @@ private:
   double manualPriceOffset_ = 0.0;
   double dragPriceOffset_ = 0.0;
   double dragPriceRange_ = 1.0;
-  bool priceRangeLocked_ = false;
-  double lockedMinPrice_ = std::numeric_limits<double>::quiet_NaN();
-  double lockedMaxPrice_ = std::numeric_limits<double>::quiet_NaN();
   QVector<PositionHitbox> positionHitboxes_;
 };
 
@@ -1339,9 +1305,9 @@ public:
       if (doc.isObject()) {
         const QString message = doc.object().value("message").toString();
         emit statusChanged("加载失败", false);
-        emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
         emit candlesLoaded({});
         emit overlayEventsLoaded({});
+        emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
         socket_.close();
         return;
       }
@@ -1612,10 +1578,10 @@ protected:
             resizeWindowTo(global);
             return true;
           }
-          updateResizeCursor(local, qobject_cast<QWidget *>(watched));
+          updateResizeCursor(local);
         }
         if (event->type() == QEvent::MouseButtonRelease && resizingWindow_) {
-          finishWindowResize(qobject_cast<QWidget *>(watched));
+          finishWindowResize();
           return true;
         }
       }
@@ -1639,13 +1605,13 @@ protected:
       event->accept();
       return;
     }
-    updateResizeCursor(event->position().toPoint(), this);
+    updateResizeCursor(event->position().toPoint());
     QMainWindow::mouseMoveEvent(event);
   }
 
   void mouseReleaseEvent(QMouseEvent *event) override {
     if (event->button() == Qt::LeftButton && resizingWindow_) {
-      finishWindowResize(this);
+      finishWindowResize();
       event->accept();
       return;
     }
@@ -1653,7 +1619,7 @@ protected:
   }
 
   void leaveEvent(QEvent *event) override {
-    if (!resizingWindow_) unsetCursor();
+    if (!resizingWindow_) clearResizeCursors();
     QMainWindow::leaveEvent(event);
   }
 
@@ -1683,15 +1649,30 @@ private:
     return Qt::ArrowCursor;
   }
 
-  void updateResizeCursor(const QPoint &pos, QWidget *source) {
+  void clearResizeCursors() {
+    unsetCursor();
+    if (centralWidget()) centralWidget()->unsetCursor();
+    if (chart_) chart_->unsetCursor();
+    if (header_) header_->unsetCursor();
+    if (footer_) footer_->unsetCursor();
+    if (titleBar_) titleBar_->unsetCursor();
+  }
+
+  void applyResizeCursor(const QCursor &cursor) {
+    setCursor(cursor);
+    if (centralWidget()) centralWidget()->setCursor(cursor);
+    if (chart_) chart_->setCursor(cursor);
+    if (header_) header_->setCursor(cursor);
+    if (footer_) footer_->setCursor(cursor);
+    if (titleBar_) titleBar_->setCursor(cursor);
+  }
+
+  void updateResizeCursor(const QPoint &pos) {
     const Qt::Edges edges = resizeEdgesAt(pos);
     if (edges != Qt::Edges{}) {
-      const QCursor cursor = cursorForEdges(edges);
-      setCursor(cursor);
-      if (source) source->setCursor(cursor);
+      applyResizeCursor(cursorForEdges(edges));
     } else {
-      unsetCursor();
-      if (source) source->unsetCursor();
+      clearResizeCursors();
     }
   }
 
@@ -1705,11 +1686,10 @@ private:
     return true;
   }
 
-  void finishWindowResize(QWidget *source) {
+  void finishWindowResize() {
     resizingWindow_ = false;
     resizeEdges_ = {};
-    unsetCursor();
-    if (source) source->unsetCursor();
+    clearResizeCursors();
   }
 
   void resizeWindowTo(const QPoint &globalPos) {
@@ -1797,8 +1777,8 @@ private:
     status_->setObjectName("status");
     symbol_->setFixedWidth(132);
     interval_->setFixedWidth(62);
-    settings_->setFixedWidth(70);
-    backend_->setFixedWidth(80);
+    settings_->setFixedWidth(73);
+    backend_->setFixedWidth(85);
     theme_->setFixedWidth(34);
     refresh_->setFixedWidth(56);
     status_->setFixedWidth(120);
