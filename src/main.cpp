@@ -89,6 +89,9 @@ public:
       const QJsonObject event = value.toObject();
       parsedOverlayEvents_.push_back({event, parsePayload(event)});
     }
+    std::sort(parsedOverlayEvents_.begin(), parsedOverlayEvents_.end(), [this](const ParsedOverlayEvent &a, const ParsedOverlayEvent &b) {
+      return jsonMs(a.event.value("eventTime")) < jsonMs(b.event.value("eventTime"));
+    });
     update();
   }
 
@@ -132,6 +135,7 @@ protected:
     paintLatestPriceLine(p, minPrice, maxPrice);
     paintLayerHints(p);
     paintCrosshair(p);
+    paintPositionTooltip(p);
     paintOhlcSketch(p);
   }
 
@@ -140,8 +144,10 @@ protected:
     hasMouse_ = true;
     if (dragging_) {
       const int dx = event->position().x() - dragStart_.x();
+      const int dy = event->position().y() - dragStart_.y();
       const int deltaBars = static_cast<int>(std::round(-dx / std::max(1.0, barStep())));
       visibleStart_ = std::clamp(dragVisibleStart_ + deltaBars, 0, maxVisibleStart());
+      manualPriceOffset_ = dragPriceOffset_ + dy * dragPriceRange_ / std::max(1.0, plotRect().height());
       requestMoreIfNeeded();
       emitOverlayRange();
       update();
@@ -149,7 +155,7 @@ protected:
     }
     if (xAxisScaling_) {
       const int dx = event->position().x() - dragStart_.x();
-      visibleCount_ = std::clamp(axisVisibleCount_ + dx / 3, 20, std::max(40, candleCount() + rightOffsetBars_));
+      visibleCount_ = std::clamp(static_cast<int>(std::round(axisVisibleCount_ * std::exp(dx / 220.0))), 12, std::max(40, candleCount() + rightOffsetBars_));
       visibleStart_ = std::clamp(axisVisibleStart_, 0, maxVisibleStart());
       emitOverlayRange();
       update();
@@ -162,6 +168,7 @@ protected:
       return;
     }
     hoveredIndex_ = indexAt(event->position().x());
+    hoveredPositionIndex_ = positionHitboxAt(event->position());
     if (hoveredIndex_ >= 0 && hoveredIndex_ < candleCount()) {
       emit hoveredCandleChanged(&candles_[hoveredIndex_]);
     } else {
@@ -172,6 +179,7 @@ protected:
 
   void leaveEvent(QEvent *) override {
     hoveredIndex_ = -1;
+    hoveredPositionIndex_ = -1;
     hasMouse_ = false;
     emit hoveredCandleChanged(nullptr);
     update();
@@ -199,6 +207,10 @@ protected:
     dragging_ = true;
     dragStart_ = event->position().toPoint();
     dragVisibleStart_ = visibleStart_;
+    double minPrice, maxPrice;
+    visibleRange(minPrice, maxPrice);
+    dragPriceRange_ = std::max(1e-9, maxPrice - minPrice);
+    dragPriceOffset_ = manualPriceOffset_;
   }
 
   void mouseReleaseEvent(QMouseEvent *event) override {
@@ -212,8 +224,8 @@ protected:
   void wheelEvent(QWheelEvent *event) override {
     if (candles_.isEmpty()) return;
     const int before = visibleCount_;
-    visibleCount_ += event->angleDelta().y() > 0 ? -16 : 16;
-    visibleCount_ = std::clamp(visibleCount_, 40, std::max(40, candleCount()));
+    const double factor = event->angleDelta().y() > 0 ? 0.86 : 1.16;
+    visibleCount_ = std::clamp(static_cast<int>(std::round(visibleCount_ * factor)), 12, std::max(40, candleCount() + rightOffsetBars_));
     const int mouseIndex = indexAt(event->position().x());
     if (mouseIndex >= 0) {
       const double ratio = (event->position().x() - plotRect().left()) / std::max(1.0, plotRect().width());
@@ -225,6 +237,14 @@ protected:
     requestMoreIfNeeded();
     emitOverlayRange();
     update();
+  }
+
+  void mouseDoubleClickEvent(QMouseEvent *event) override {
+    if (event->button() == Qt::LeftButton && priceAxisRect().contains(event->position())) {
+      manualPriceScale_ = 1.0;
+      manualPriceOffset_ = 0.0;
+      update();
+    }
   }
 
 private:
@@ -289,6 +309,8 @@ private:
       minPrice = mid - half;
       maxPrice = mid + half;
     }
+    minPrice += manualPriceOffset_;
+    maxPrice += manualPriceOffset_;
   }
 
   double yFor(double price, double minPrice, double maxPrice) const {
@@ -387,12 +409,14 @@ private:
   }
 
   void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
+    positionHitboxes_.clear();
     if (parsedOverlayEvents_.isEmpty() || candles_.isEmpty()) return;
     QFont label = font();
     label.setPixelSize(10);
     label.setWeight(QFont::DemiBold);
     p.setFont(label);
 
+    QSet<QString> drawnIfvgs;
     for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
       const QJsonObject event = parsed.event;
       const QString type = event.value("eventType").toString();
@@ -404,7 +428,7 @@ private:
         drawNEvent(p, payload.value("base_n").toObject(), QColor(230, 226, 211, 120), "Base", minPrice, maxPrice);
         drawNEvent(p, payload.value("signal_n").toObject(), QColor(39, 212, 177, 220), "N-IN", minPrice, maxPrice);
       }
-      if (ifvgVisible_ && (type == "ENTRY_SIGNAL_OPEN_SENT" || type == "POSITION_OPEN_FILLED")) drawIfvgEvent(p, payload, minPrice, maxPrice);
+      if (ifvgVisible_ && (type == "ENTRY_SIGNAL_OPEN_SENT" || type == "POSITION_OPEN_FILLED")) drawIfvgEvent(p, payload, event, drawnIfvgs, minPrice, maxPrice);
     }
     if (orderVisible_) drawPositions(p, minPrice, maxPrice);
   }
@@ -430,7 +454,13 @@ private:
     const auto it = std::lower_bound(candles_.begin(), candles_.end(), ms, [](const Candle &c, qint64 t) {
       return c.ms < t;
     });
-    int index = it == candles_.end() ? candleCount() - 1 : static_cast<int>(std::distance(candles_.begin(), it));
+    int index = 0;
+    if (it == candles_.end()) {
+      index = candleCount() - 1;
+    } else {
+      index = static_cast<int>(std::distance(candles_.begin(), it));
+      if (it->ms != ms && index > 0) --index;
+    }
     return std::clamp(index, 0, candleCount() - 1);
   }
 
@@ -518,7 +548,7 @@ private:
     p.drawText(pts.last() + QPointF(6, -6), label);
   }
 
-  void drawIfvgEvent(QPainter &p, const QJsonObject &payload, double minPrice, double maxPrice) {
+  void drawIfvgEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, QSet<QString> &drawn, double minPrice, double maxPrice) {
     const QJsonObject signal = payload.value("entry_signal").toObject();
     if (signal.value("type").toString() != "IFVG") return;
     const QJsonObject fvg = signal.value("fvg").toObject();
@@ -530,6 +560,10 @@ private:
     if (start <= 0) start = jsonMs(fvg.value("k1_time").isUndefined() ? fvg.value("create_time") : fvg.value("k1_time"));
     const qint64 end = jsonMs(fvg.value("ifvg_time").isUndefined() ? signal.value("time") : fvg.value("ifvg_time"));
     if (!std::isfinite(top) || !std::isfinite(bottom) || start <= 0 || end <= 0) return;
+    const QString direction = signal.value("direction").toString(event.value("direction").toString());
+    const QString key = QString("%1:%2:%3:%4:%5").arg(direction).arg(start).arg(end).arg(top, 0, 'g', 14).arg(bottom, 0, 'g', 14);
+    if (drawn.contains(key)) return;
+    drawn.insert(key);
     QRectF box(pointAtTime(start, top, minPrice, maxPrice), pointAtTime(end, bottom, minPrice, maxPrice));
     box = box.normalized();
     p.fillRect(box, QColor(110, 215, 246, 87));
@@ -581,6 +615,9 @@ private:
     double sl = std::numeric_limits<double>::quiet_NaN();
     double tp1 = std::numeric_limits<double>::quiet_NaN();
     double quantity = std::numeric_limits<double>::quiet_NaN();
+    QString signalType;
+    QString backgroundType;
+    QString backgroundDirection;
     QVector<PositionPartial> partials;
     bool closed = false;
     qint64 closeTime = 0;
@@ -593,7 +630,32 @@ private:
     return positionId > 0 ? QString("p:%1").arg(positionId) : QString("t:%1").arg(entryTime);
   }
 
+  QString positionSignalKey(const QString &direction, qint64 entryTime) const {
+    return QString("%1:%2").arg(direction).arg(entryTime);
+  }
+
   void drawPositions(QPainter &p, double minPrice, double maxPrice) {
+    struct SentEntry {
+      QString signalType;
+      QString backgroundType;
+      QString backgroundDirection;
+    };
+    QHash<QString, SentEntry> sentEntries;
+    for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+      const QJsonObject event = parsed.event;
+      if (event.value("eventType").toString() != "ENTRY_SIGNAL_OPEN_SENT") continue;
+      const QJsonObject payload = parsed.payload;
+      const qint64 entryTime = jsonMs(event.value("eventTime").isUndefined() ? payload.value("entry_time") : event.value("eventTime"));
+      if (entryTime <= 0) continue;
+      const QJsonObject signal = payload.value("entry_signal").toObject();
+      const QJsonObject background = payload.value("background").toObject();
+      sentEntries.insert(positionSignalKey(event.value("direction").toString(), entryTime), {
+        signal.value("type").toString(),
+        background.value("type").toString(),
+        background.value("direction").toString()
+      });
+    }
+
     QHash<QString, PositionShape> positions;
     for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
       const QJsonObject event = parsed.event;
@@ -610,6 +672,12 @@ private:
         position.sl = payload.value("sl").toDouble(std::numeric_limits<double>::quiet_NaN());
         position.tp1 = payload.value("tp1").toDouble(std::numeric_limits<double>::quiet_NaN());
         position.quantity = payload.value("quantity").toDouble(std::numeric_limits<double>::quiet_NaN());
+        const QJsonObject signal = payload.value("entry_signal").toObject();
+        const QJsonObject background = payload.value("background").toObject();
+        const SentEntry sent = sentEntries.value(positionSignalKey(position.direction, entryTime));
+        position.signalType = signal.value("type").toString(position.signalType.isEmpty() ? sent.signalType : position.signalType);
+        position.backgroundType = background.value("type").toString(position.backgroundType.isEmpty() ? sent.backgroundType : position.backgroundType);
+        position.backgroundDirection = background.value("direction").toString(position.backgroundDirection.isEmpty() ? sent.backgroundDirection : position.backgroundDirection);
         positions.insert(key, position);
       } else if (type == "POSITION_PARTIAL_CLOSED" || type == "POSITION_CLOSED") {
         const qint64 entryTime = jsonMs(payload.value("entry_time"));
@@ -651,15 +719,23 @@ private:
     if (!position.partials.isEmpty()) firstPartialExit = position.partials.first().exitPrice;
     const double tp2 = std::isfinite(position.exitPrice) && (isLong ? position.exitPrice > entry : position.exitPrice < entry) ? position.exitPrice : std::numeric_limits<double>::quiet_NaN();
     const double profitBoundary = std::isfinite(tp2) ? tp2 : firstPartialExit;
+    const bool hasTp1 = std::isfinite(firstPartialExit) && (isLong ? firstPartialExit > entry : firstPartialExit < entry);
+    const bool tp1BetterThanTp2 = hasTp1 && std::isfinite(position.exitPrice) && (isLong ? firstPartialExit > position.exitPrice : firstPartialExit < position.exitPrice);
+    registerPositionHitbox(position, end, entry, sl, firstPartialExit, position.exitPrice, minPrice, maxPrice);
 
     if (std::isfinite(sl) && (isLong ? sl < entry : sl > entry)) {
-      drawPositionArea(p, position.entryTime, end, entry, sl, false, minPrice, maxPrice);
+      const bool emphasized = std::isfinite(position.totalPnl) && position.totalPnl < 0;
+      drawPositionArea(p, position.entryTime, end, entry, sl, false, emphasized, minPrice, maxPrice);
       drawLineAt(p, position.entryTime, end, sl, QColor(239, 95, 120, 225), Qt::SolidLine, minPrice, maxPrice);
     }
     if (std::isfinite(profitBoundary) && (isLong ? profitBoundary > entry : profitBoundary < entry)) {
-      drawPositionArea(p, position.entryTime, end, entry, profitBoundary, true, minPrice, maxPrice);
+      const bool emphasized = std::isfinite(position.totalPnl) && position.totalPnl >= 0;
+      drawPositionArea(p, position.entryTime, end, entry, profitBoundary, true, emphasized, minPrice, maxPrice);
     }
-    if (std::isfinite(firstPartialExit)) {
+    if (tp1BetterThanTp2) {
+      drawRangeArea(p, position.entryTime, end, firstPartialExit, position.exitPrice, QColor(148, 163, 184, 77), minPrice, maxPrice);
+    }
+    if (hasTp1) {
       drawLineAt(p, position.entryTime, end, firstPartialExit, QColor(32, 201, 151, 210), Qt::DashLine, minPrice, maxPrice);
     }
     if (std::isfinite(tp2) && (!std::isfinite(firstPartialExit) || std::abs(tp2 - firstPartialExit) > 1e-9)) {
@@ -685,9 +761,21 @@ private:
     p.drawLine(pointAtTime(start, price, minPrice, maxPrice), pointAtTime(end, price, minPrice, maxPrice));
   }
 
-  void drawPositionArea(QPainter &p, qint64 start, qint64 end, double entry, double boundary, bool profitable, double minPrice, double maxPrice) {
-    const QColor fill = profitable ? QColor(32, 201, 151, 66) : QColor(239, 95, 120, 62);
+  void drawPositionArea(QPainter &p, qint64 start, qint64 end, double entry, double boundary, bool profitable, bool emphasized, double minPrice, double maxPrice) {
+    const int strong = emphasized ? (profitable ? 138 : 133) : (profitable ? 66 : 61);
+    const int soft = emphasized ? 61 : 26;
+    const QColor base = profitable ? QColor(32, 201, 151) : QColor(239, 95, 120);
     QRectF area(pointAtTime(start, entry, minPrice, maxPrice), pointAtTime(end, boundary, minPrice, maxPrice));
+    area = area.normalized();
+    QLinearGradient gradient(area.topLeft(), area.bottomLeft());
+    gradient.setColorAt(0.0, QColor(base.red(), base.green(), base.blue(), boundary > entry ? strong : soft));
+    gradient.setColorAt(1.0, QColor(base.red(), base.green(), base.blue(), boundary > entry ? soft : strong));
+    p.fillRect(area, gradient);
+  }
+
+  void drawRangeArea(QPainter &p, qint64 start, qint64 end, double a, double b, const QColor &fill, double minPrice, double maxPrice) {
+    if (!std::isfinite(a) || !std::isfinite(b) || std::abs(a - b) < 1e-9) return;
+    QRectF area(pointAtTime(start, a, minPrice, maxPrice), pointAtTime(end, b, minPrice, maxPrice));
     p.fillRect(area.normalized(), fill);
   }
 
@@ -764,6 +852,54 @@ private:
     row(markerVisible_, "Marker");
   }
 
+  struct PositionHitbox {
+    QRectF rect;
+    QString direction;
+    double entry = std::numeric_limits<double>::quiet_NaN();
+    double tp1R = std::numeric_limits<double>::quiet_NaN();
+    double tp2R = std::numeric_limits<double>::quiet_NaN();
+    double pnl = std::numeric_limits<double>::quiet_NaN();
+    double quantity = std::numeric_limits<double>::quiet_NaN();
+    QString signalType;
+    QString backgroundType;
+    QString backgroundDirection;
+  };
+
+  void registerPositionHitbox(const PositionShape &position, qint64 end, double entry, double sl, double tp1, double exitPrice, double minPrice, double maxPrice) {
+    QVector<double> prices;
+    auto add = [&](double value) {
+      if (std::isfinite(value)) prices.push_back(value);
+    };
+    add(entry);
+    add(sl);
+    add(tp1);
+    add(exitPrice);
+    if (prices.size() < 2) return;
+    const auto [minIt, maxIt] = std::minmax_element(prices.begin(), prices.end());
+    QRectF rect(pointAtTime(position.entryTime, *minIt, minPrice, maxPrice), pointAtTime(end, *maxIt, minPrice, maxPrice));
+    rect = rect.normalized();
+    const double risk = std::isfinite(sl) ? std::abs(entry - sl) : std::numeric_limits<double>::quiet_NaN();
+    PositionHitbox hitbox;
+    hitbox.rect = rect.adjusted(-2, -2, 2, 2);
+    hitbox.direction = position.direction;
+    hitbox.entry = entry;
+    hitbox.tp1R = std::isfinite(tp1) && risk > 0 ? std::abs(tp1 - entry) / risk : std::numeric_limits<double>::quiet_NaN();
+    hitbox.tp2R = std::isfinite(exitPrice) && risk > 0 ? std::abs(exitPrice - entry) / risk : std::numeric_limits<double>::quiet_NaN();
+    hitbox.pnl = position.totalPnl;
+    hitbox.quantity = position.quantity;
+    hitbox.signalType = position.signalType;
+    hitbox.backgroundType = position.backgroundType;
+    hitbox.backgroundDirection = position.backgroundDirection;
+    positionHitboxes_.push_back(hitbox);
+  }
+
+  int positionHitboxAt(const QPointF &point) const {
+    for (int i = positionHitboxes_.size() - 1; i >= 0; --i) {
+      if (positionHitboxes_[i].rect.contains(point)) return i;
+    }
+    return -1;
+  }
+
   bool toggleLayerAt(const QPointF &point) {
     if (point.x() < 12 || point.x() > 170 || point.y() < 12 || point.y() > 136) return false;
     const int row = static_cast<int>((point.y() - 16) / 18);
@@ -804,6 +940,62 @@ private:
     f.setWeight(QFont::DemiBold);
     p.setFont(f);
     p.drawText(rect, Qt::AlignCenter, text);
+  }
+
+  QString formatCompact(double value, int precision = 2) const {
+    return std::isfinite(value) ? QString::number(value, 'f', precision) : "--";
+  }
+
+  QString formatBackground(const PositionHitbox &hitbox) const {
+    if (hitbox.backgroundType.isEmpty() && hitbox.backgroundDirection.isEmpty()) return "--";
+    return hitbox.backgroundType + (hitbox.backgroundDirection.isEmpty() ? "" : " / " + hitbox.backgroundDirection);
+  }
+
+  void paintPositionTooltip(QPainter &p) {
+    if (!hasMouse_ || hoveredPositionIndex_ < 0 || hoveredPositionIndex_ >= positionHitboxes_.size()) return;
+    const PositionHitbox &hitbox = positionHitboxes_[hoveredPositionIndex_];
+    QRectF panel(mousePos_.x() + 14, mousePos_.y() + 14, 226, 132);
+    panel.moveLeft(std::min(panel.left(), width() - panel.width() - 10));
+    panel.moveTop(std::max(10.0, std::min(panel.top(), height() - panel.height() - 10.0)));
+    p.setPen(QPen(dark_ ? QColor(230, 226, 211, 46) : QColor(23, 31, 27, 48), 1));
+    p.setBrush(dark_ ? QColor(12, 17, 15, 235) : QColor(255, 253, 247, 238));
+    p.drawRect(panel);
+
+    QFont head = font();
+    head.setPixelSize(11);
+    head.setWeight(QFont::Black);
+    p.setFont(head);
+    const QColor sideColor = hitbox.direction == "LONG" ? up() : down();
+    QRectF side(panel.left() + 12, panel.top() + 10, 56, 22);
+    p.setPen(QPen(sideColor, 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(side);
+    p.drawText(side, Qt::AlignCenter, hitbox.direction.isEmpty() ? "--" : hitbox.direction);
+    p.setPen(text());
+    p.drawText(QRectF(panel.right() - 86, panel.top() + 10, 74, 22), Qt::AlignRight | Qt::AlignVCenter, formatCompact(hitbox.quantity, 4));
+    p.setPen(QPen(dark_ ? QColor(230, 226, 211, 36) : QColor(23, 31, 27, 36), 1));
+    p.drawLine(QPointF(panel.left() + 12, panel.top() + 42), QPointF(panel.right() - 12, panel.top() + 42));
+
+    QFont body = font();
+    body.setPixelSize(10);
+    body.setWeight(QFont::DemiBold);
+    p.setFont(body);
+    const QStringList labels{"Background", "Signal", "Entry", "TP1 R", "TP2 R", "PNL"};
+    const QStringList values{
+      formatBackground(hitbox),
+      hitbox.signalType.isEmpty() ? "--" : hitbox.signalType,
+      formatCompact(hitbox.entry),
+      std::isfinite(hitbox.tp1R) ? QString("%1R").arg(formatCompact(hitbox.tp1R)) : "--",
+      std::isfinite(hitbox.tp2R) ? QString("%1R").arg(formatCompact(hitbox.tp2R)) : "--",
+      std::isfinite(hitbox.pnl) ? QString::number(hitbox.pnl, 'f', 2) : "--"
+    };
+    for (int i = 0; i < labels.size(); ++i) {
+      const double y = panel.top() + 55 + i * 12;
+      p.setPen(muted());
+      p.drawText(QPointF(panel.left() + 12, y), labels[i]);
+      p.setPen(i == 5 && std::isfinite(hitbox.pnl) ? (hitbox.pnl >= 0 ? up() : down()) : text());
+      p.drawText(QRectF(panel.left() + 92, y - 10, panel.width() - 104, 13), Qt::AlignRight | Qt::AlignVCenter, values[i]);
+    }
   }
 
   void paintOhlcSketch(QPainter &p) {
@@ -866,6 +1058,7 @@ private:
   int visibleCount_ = 160;
   int rightOffsetBars_ = 40;
   int hoveredIndex_ = -1;
+  int hoveredPositionIndex_ = -1;
   bool hasMouse_ = false;
   QPointF mousePos_;
   bool dragging_ = false;
@@ -878,6 +1071,10 @@ private:
   int axisVisibleStart_ = 0;
   double manualPriceScale_ = 1.0;
   double axisPriceScale_ = 1.0;
+  double manualPriceOffset_ = 0.0;
+  double dragPriceOffset_ = 0.0;
+  double dragPriceRange_ = 1.0;
+  QVector<PositionHitbox> positionHitboxes_;
 };
 
 class CandleClient : public QObject {
