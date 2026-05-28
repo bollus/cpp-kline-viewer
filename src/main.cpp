@@ -56,6 +56,7 @@ public:
   void setCandles(QVector<Candle> candles) {
     candles_ = std::move(candles);
     overlayEvents_ = {};
+    parsedOverlayEvents_.clear();
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
       return a.ms < b.ms;
     });
@@ -65,8 +66,29 @@ public:
     update();
   }
 
+  void prependCandles(QVector<Candle> older) {
+    if (older.isEmpty()) return;
+    const qint64 previousFirst = candles_.isEmpty() ? 0 : candles_.first().ms;
+    candles_ += older;
+    std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
+      return a.ms < b.ms;
+    });
+    candles_.erase(std::unique(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
+      return a.ms == b.ms;
+    }), candles_.end());
+    const int previousIndex = indexAtTime(previousFirst);
+    if (previousIndex > 0) visibleStart_ += previousIndex;
+    visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
+    update();
+  }
+
   void setOverlayEvents(const QJsonArray &events) {
     overlayEvents_ = events;
+    parsedOverlayEvents_.clear();
+    for (const QJsonValue &value : overlayEvents_) {
+      const QJsonObject event = value.toObject();
+      parsedOverlayEvents_.push_back({event, parsePayload(event)});
+    }
     update();
   }
 
@@ -94,6 +116,8 @@ public:
 
 signals:
   void hoveredCandleChanged(const Candle *candle);
+  void olderCandlesRequested(qint64 beforeMs);
+  void overlayRangeChanged(qint64 startMs, qint64 endMs);
 
 protected:
   void paintEvent(QPaintEvent *) override {
@@ -118,6 +142,22 @@ protected:
       const int dx = event->position().x() - dragStart_.x();
       const int deltaBars = static_cast<int>(std::round(-dx / std::max(1.0, barStep())));
       visibleStart_ = std::clamp(dragVisibleStart_ + deltaBars, 0, maxVisibleStart());
+      requestMoreIfNeeded();
+      emitOverlayRange();
+      update();
+      return;
+    }
+    if (xAxisScaling_) {
+      const int dx = event->position().x() - dragStart_.x();
+      visibleCount_ = std::clamp(axisVisibleCount_ + dx / 3, 20, std::max(40, candleCount() + rightOffsetBars_));
+      visibleStart_ = std::clamp(axisVisibleStart_, 0, maxVisibleStart());
+      emitOverlayRange();
+      update();
+      return;
+    }
+    if (yAxisScaling_) {
+      const int dy = event->position().y() - dragStart_.y();
+      manualPriceScale_ = std::clamp(axisPriceScale_ * std::exp(dy / 180.0), 0.2, 8.0);
       update();
       return;
     }
@@ -143,13 +183,30 @@ protected:
       update();
       return;
     }
+    if (priceAxisRect().contains(event->position())) {
+      yAxisScaling_ = true;
+      dragStart_ = event->position().toPoint();
+      axisPriceScale_ = manualPriceScale_;
+      return;
+    }
+    if (timeAxisRect().contains(event->position())) {
+      xAxisScaling_ = true;
+      dragStart_ = event->position().toPoint();
+      axisVisibleCount_ = visibleCount_;
+      axisVisibleStart_ = visibleStart_;
+      return;
+    }
     dragging_ = true;
     dragStart_ = event->position().toPoint();
     dragVisibleStart_ = visibleStart_;
   }
 
   void mouseReleaseEvent(QMouseEvent *event) override {
-    if (event->button() == Qt::LeftButton) dragging_ = false;
+    if (event->button() == Qt::LeftButton) {
+      dragging_ = false;
+      xAxisScaling_ = false;
+      yAxisScaling_ = false;
+    }
   }
 
   void wheelEvent(QWheelEvent *event) override {
@@ -165,12 +222,24 @@ protected:
       visibleStart_ += (before - visibleCount_) / 2;
     }
     visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
+    requestMoreIfNeeded();
+    emitOverlayRange();
     update();
   }
 
 private:
   QRectF plotRect() const {
     return rect().adjusted(16, 16, -74, -28);
+  }
+
+  QRectF priceAxisRect() const {
+    const QRectF r = plotRect();
+    return QRectF(r.right(), r.top(), width() - r.right(), r.height());
+  }
+
+  QRectF timeAxisRect() const {
+    const QRectF r = plotRect();
+    return QRectF(r.left(), r.bottom(), r.width(), height() - r.bottom());
   }
 
   double barStep() const {
@@ -214,6 +283,12 @@ private:
     const double pad = (maxPrice - minPrice) * 0.08;
     minPrice -= pad;
     maxPrice += pad;
+    if (manualPriceScale_ != 1.0) {
+      const double mid = (minPrice + maxPrice) / 2.0;
+      const double half = (maxPrice - minPrice) * manualPriceScale_ / 2.0;
+      minPrice = mid - half;
+      maxPrice = mid + half;
+    }
   }
 
   double yFor(double price, double minPrice, double maxPrice) const {
@@ -295,17 +370,33 @@ private:
     return std::min(candleCount(), visibleStart_ + visibleCount_);
   }
 
+  void requestMoreIfNeeded() {
+    if (loadingOlderRequested_ || candles_.isEmpty()) return;
+    if (visibleStart_ < 50) {
+      loadingOlderRequested_ = true;
+      emit olderCandlesRequested(candles_.first().ms - 1);
+      QTimer::singleShot(900, this, [this] { loadingOlderRequested_ = false; });
+    }
+  }
+
+  void emitOverlayRange() {
+    if (candles_.isEmpty()) return;
+    const int start = std::clamp(visibleStart_, 0, candleCount() - 1);
+    const int end = std::clamp(visibleEnd() - 1, 0, candleCount() - 1);
+    emit overlayRangeChanged(candles_[start].ms, candles_[end].ms + 20 * barIntervalMs());
+  }
+
   void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
-    if (overlayEvents_.isEmpty() || candles_.isEmpty()) return;
+    if (parsedOverlayEvents_.isEmpty() || candles_.isEmpty()) return;
     QFont label = font();
     label.setPixelSize(10);
     label.setWeight(QFont::DemiBold);
     p.setFont(label);
 
-    for (const QJsonValue &value : overlayEvents_) {
-      const QJsonObject event = value.toObject();
+    for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+      const QJsonObject event = parsed.event;
       const QString type = event.value("eventType").toString();
-      const QJsonObject payload = parsePayload(event);
+      const QJsonObject payload = parsed.payload;
       if (rangeVisible_ && type == "RANGE_BOUNDARY_UPDATED") drawRangeEvent(p, payload, minPrice, maxPrice);
       if (rangeVisible_ && type == "RANGE_BOUNDARY_TOUCHED") drawRangeTouchEvent(p, payload, event, minPrice, maxPrice);
       if (nVisible_ && type == "HIGH_N_DETECTED") drawNEvent(p, payload.value("n").toObject(), QColor(240, 182, 79, 220), "N", minPrice, maxPrice);
@@ -374,10 +465,10 @@ private:
 
   qint64 rangeEndMs(const QString &side, qint64 start) const {
     qint64 end = 0;
-    for (const QJsonValue &value : overlayEvents_) {
-      const QJsonObject event = value.toObject();
+    for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+      const QJsonObject event = parsed.event;
       if (event.value("eventType").toString() != "RANGE_BOUNDARY_ENDED") continue;
-      const QJsonObject payload = parsePayload(event);
+      const QJsonObject payload = parsed.payload;
       if (payload.value("side").toString() != side) continue;
       if (jsonMs(payload.value("start_time")) != start) continue;
       const qint64 candidate = jsonMs(payload.value("end_time"));
@@ -504,10 +595,10 @@ private:
 
   void drawPositions(QPainter &p, double minPrice, double maxPrice) {
     QHash<QString, PositionShape> positions;
-    for (const QJsonValue &value : overlayEvents_) {
-      const QJsonObject event = value.toObject();
+    for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+      const QJsonObject event = parsed.event;
       const QString type = event.value("eventType").toString();
-      const QJsonObject payload = parsePayload(event);
+      const QJsonObject payload = parsed.payload;
       if (type == "POSITION_OPEN_FILLED") {
         const qint64 entryTime = jsonMs(payload.value("entry_time").isUndefined() ? event.value("eventTime") : payload.value("entry_time"));
         const QString key = positionKey(payload, entryTime);
@@ -638,10 +729,10 @@ private:
 
   qint64 positionEndMs(const QJsonObject &openPayload, qint64 entryTime) const {
     const double positionId = openPayload.value("position_id").toDouble(0);
-    for (const QJsonValue &value : overlayEvents_) {
-      const QJsonObject event = value.toObject();
+    for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+      const QJsonObject event = parsed.event;
       if (event.value("eventType").toString() != "POSITION_CLOSED") continue;
-      const QJsonObject payload = parsePayload(event);
+      const QJsonObject payload = parsed.payload;
       const double closePositionId = payload.value("position_id").toDouble(0);
       const qint64 closeEntryTime = jsonMs(payload.value("entry_time"));
       if ((positionId > 0 && closePositionId == positionId) || (positionId <= 0 && closeEntryTime == entryTime)) {
@@ -759,6 +850,11 @@ private:
 
   QVector<Candle> candles_;
   QJsonArray overlayEvents_;
+  struct ParsedOverlayEvent {
+    QJsonObject event;
+    QJsonObject payload;
+  };
+  QVector<ParsedOverlayEvent> parsedOverlayEvents_;
   bool dark_ = true;
   bool rangeVisible_ = true;
   bool nVisible_ = true;
@@ -773,8 +869,15 @@ private:
   bool hasMouse_ = false;
   QPointF mousePos_;
   bool dragging_ = false;
+  bool xAxisScaling_ = false;
+  bool yAxisScaling_ = false;
+  bool loadingOlderRequested_ = false;
   QPoint dragStart_;
   int dragVisibleStart_ = 0;
+  int axisVisibleCount_ = 160;
+  int axisVisibleStart_ = 0;
+  double manualPriceScale_ = 1.0;
+  double axisPriceScale_ = 1.0;
 };
 
 class CandleClient : public QObject {
@@ -806,6 +909,11 @@ public:
     interval_ = interval.trimmed();
     higherInterval_ = higherInterval.trimmed();
     lowerInterval_ = lowerInterval.trimmed();
+    knownStartMs_ = 0;
+    knownEndMs_ = 0;
+    overlayLoadedStartMs_ = 0;
+    overlayLoadedEndMs_ = 0;
+    overlayEvents_ = {};
     if (backendBase_.isEmpty()) {
       emit statusChanged("后端未配置", false);
       return;
@@ -835,14 +943,50 @@ public:
         const QJsonObject obj = value.toObject();
         candles.push_back(parseCandle(obj));
       }
+      updateKnownRange(candles);
       emit candlesLoaded(candles);
-      fetchOverlayEvents();
+      fetchOverlayEvents(knownStartMs_, knownEndMs_ + intervalMs(interval_) * 20);
       connectSocket();
     });
   }
 
+  void loadOlder(qint64 beforeMs) {
+    if (loadingOlder_ || backendBase_.isEmpty() || symbol_.isEmpty() || interval_.isEmpty()) return;
+    loadingOlder_ = true;
+    const qint64 end = beforeMs;
+    const qint64 start = std::max<qint64>(0, end - intervalMs(interval_) * 500);
+    QUrl url(backendBase_ + "/api/candles");
+    QUrlQuery query;
+    query.addQueryItem("symbol", symbol_);
+    query.addQueryItem("interval", interval_);
+    query.addQueryItem("startTime", QString::number(start));
+    query.addQueryItem("endTime", QString::number(end));
+    url.setQuery(query);
+    QNetworkReply *reply = network_.get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, start, end] {
+      reply->deleteLater();
+      loadingOlder_ = false;
+      if (reply->error() != QNetworkReply::NoError) return;
+      const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+      QVector<Candle> candles;
+      for (const QJsonValue &value : doc.array()) candles.push_back(parseCandle(value.toObject()));
+      if (candles.isEmpty()) return;
+      updateKnownRange(candles);
+      emit olderCandlesLoaded(candles);
+      fetchOverlayEvents(knownStartMs_, knownEndMs_ + intervalMs(interval_) * 20);
+    });
+  }
+
+  void loadOverlayRange(qint64 startMs, qint64 endMs) {
+    if (backendBase_.isEmpty() || symbol_.isEmpty()) return;
+    if (startMs >= overlayLoadedStartMs_ && endMs <= overlayLoadedEndMs_) return;
+    fetchOverlayEvents(std::min(startMs, overlayLoadedStartMs_ == 0 ? startMs : overlayLoadedStartMs_),
+                       std::max(endMs, overlayLoadedEndMs_));
+  }
+
 signals:
   void candlesLoaded(const QVector<Candle> &candles);
+  void olderCandlesLoaded(const QVector<Candle> &candles);
   void overlayEventsLoaded(const QJsonArray &events);
   void candleUpdated(const Candle &candle);
   void statusChanged(const QString &status, bool live);
@@ -868,13 +1012,11 @@ private:
     socket_.open(url);
   }
 
-  void fetchOverlayEvents() {
+  void fetchOverlayEvents(qint64 start, qint64 end) {
     if (symbol_.isEmpty() || higherInterval_.isEmpty() || lowerInterval_.isEmpty()) {
       emit overlayEventsLoaded({});
       return;
     }
-    const qint64 end = QDateTime::currentMSecsSinceEpoch() + intervalMs(interval_) * 20;
-    const qint64 start = end - intervalMs(interval_) * 360;
     QUrl url(backendBase_ + "/api/strategy-overlay-events");
     QUrlQuery query;
     query.addQueryItem("strategy", "n_in_range_variant");
@@ -885,15 +1027,44 @@ private:
     query.addQueryItem("endTime", QString::number(end));
     url.setQuery(query);
     QNetworkReply *reply = network_.get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, start, end] {
       reply->deleteLater();
       if (reply->error() != QNetworkReply::NoError) {
         emit overlayEventsLoaded({});
         return;
       }
       const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-      emit overlayEventsLoaded(doc.isArray() ? doc.array() : QJsonArray{});
+      overlayLoadedStartMs_ = overlayLoadedStartMs_ == 0 ? start : std::min(overlayLoadedStartMs_, start);
+      overlayLoadedEndMs_ = std::max(overlayLoadedEndMs_, end);
+      mergeOverlayEvents(doc.isArray() ? doc.array() : QJsonArray{});
+      emit overlayEventsLoaded(overlayEvents_);
     });
+  }
+
+  void updateKnownRange(const QVector<Candle> &candles) {
+    if (candles.isEmpty()) return;
+    qint64 start = candles.first().ms;
+    qint64 end = candles.first().ms;
+    for (const Candle &candle : candles) {
+      start = std::min(start, candle.ms);
+      end = std::max(end, candle.ms);
+    }
+    knownStartMs_ = knownStartMs_ == 0 ? start : std::min(knownStartMs_, start);
+    knownEndMs_ = std::max(knownEndMs_, end);
+  }
+
+  void mergeOverlayEvents(const QJsonArray &events) {
+    QHash<QString, QJsonObject> byId;
+    for (const QJsonValue &value : overlayEvents_) {
+      const QJsonObject event = value.toObject();
+      byId.insert(event.value("id").toVariant().toString(), event);
+    }
+    for (const QJsonValue &value : events) {
+      const QJsonObject event = value.toObject();
+      byId.insert(event.value("id").toVariant().toString(), event);
+    }
+    overlayEvents_ = {};
+    for (const QJsonObject &event : byId) overlayEvents_.append(event);
   }
 
   void onSocketMessage(const QString &message) {
@@ -910,6 +1081,12 @@ private:
   QString lowerInterval_;
   QNetworkAccessManager network_;
   QWebSocket socket_;
+  bool loadingOlder_ = false;
+  qint64 knownStartMs_ = 0;
+  qint64 knownEndMs_ = 0;
+  qint64 overlayLoadedStartMs_ = 0;
+  qint64 overlayLoadedEndMs_ = 0;
+  QJsonArray overlayEvents_;
 };
 
 class MainWindow : public QMainWindow {
@@ -1077,11 +1254,14 @@ private:
     });
     connect(settings_, &QPushButton::clicked, settingsDialog_, &QDialog::show);
     connect(&client_, &CandleClient::candlesLoaded, chart_, &ChartWidget::setCandles);
+    connect(&client_, &CandleClient::olderCandlesLoaded, chart_, &ChartWidget::prependCandles);
     connect(&client_, &CandleClient::overlayEventsLoaded, chart_, &ChartWidget::setOverlayEvents);
     connect(&client_, &CandleClient::overlayEventsLoaded, this, [this](const QJsonArray &events) {
       events_->setText(QString("Events %1").arg(events.size()));
     });
     connect(&client_, &CandleClient::candleUpdated, chart_, &ChartWidget::upsertCandle);
+    connect(chart_, &ChartWidget::olderCandlesRequested, &client_, &CandleClient::loadOlder);
+    connect(chart_, &ChartWidget::overlayRangeChanged, &client_, &CandleClient::loadOverlayRange);
     connect(&client_, &CandleClient::statusChanged, this, [this](const QString &status, bool live) {
       status_->setText((live ? "● " : "○ ") + status);
     });
