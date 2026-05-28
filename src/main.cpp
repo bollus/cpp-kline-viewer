@@ -1575,7 +1575,7 @@ class MainWindow : public QMainWindow {
 public:
   MainWindow() {
     setWindowTitle("Q4J Market Structure Desk");
-    setWindowIcon(QIcon(":/app-icon.svg"));
+    setWindowIcon(QIcon(":/app.ico"));
     setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
     setMouseTracking(true);
     resize(1440, 860);

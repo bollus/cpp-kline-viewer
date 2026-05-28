@@ -13,65 +13,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
         with:
-          version: "6.6.3"
-          modules: "qtwebsockets"
-          cache: true
+          path: |
+            ${{ github.workspace }}/vcpkg_installed
+            ${{ env.LOCALAPPDATA }}\vcpkg\archives
+          key: windows-static-qt-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Install static Qt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          vcpkg install qtbase:x64-windows-static qtwebsockets:x64-windows-static
 
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>"
 
       - name: Build
         run: cmake --build build --config Release
 
-      - name: Deploy Qt runtime
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path build/package | Out-Null
-          Copy-Item build/Release/q4j_kline_viewer.exe build/package/
-          windeployqt --release --compiler-runtime build/package/q4j_kline_viewer.exe
-
-      - name: Create single Windows exe
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $sevenZip = "${env:ProgramFiles}\7-Zip\7z.exe"
-          if (!(Test-Path $sevenZip)) { throw "7z.exe not found" }
-          $sfx = "${env:ProgramFiles}\7-Zip\7z.sfx"
-          if (!(Test-Path $sfx)) { throw "7z.sfx not found" }
-
-          Push-Location build/package
-          & $sevenZip a -t7z ..\package.7z *
-          Pop-Location
-
-          $config = @"
-          ;!@Install@!UTF-8!
-          Title="Q4J K-Line Viewer"
-          BeginPrompt="Run Q4J K-Line Viewer?"
-          RunProgram="q4j_kline_viewer.exe"
-          GUIMode="2"
-          ;!@InstallEnd@!
-          "@
-          Set-Content -Path build/sfx-config.txt -Value $config -Encoding UTF8
-          $out = "build/q4j-kline-viewer-windows.exe"
-          $outStream = [System.IO.File]::Open($out, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-          foreach ($part in @($sfx, "build/sfx-config.txt", "build/package.7z")) {
-            if (!(Test-Path $part)) { throw "Missing SFX part: $part" }
-            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $part))
-            $outStream.Write($bytes, 0, $bytes.Length)
-          }
-          $outStream.Close()
-          if (!(Test-Path build/q4j-kline-viewer-windows.exe)) { throw "SFX exe was not created" }
-          Get-Item build/q4j-kline-viewer-windows.exe | Format-List FullName,Length
-
       - name: List package output
         shell: pwsh
-        run: Get-ChildItem -Recurse build | Select-Object FullName, Length
+        run: Get-ChildItem -Recurse build/Release | Select-Object FullName, Length
 
       - name: Upload Windows exe
         uses: actions/upload-artifact@v4
         with:
           name: q4j-kline-viewer-windows-exe
-          path: build/q4j-kline-viewer-windows.exe
+          path: build/Release/q4j_kline_viewer.exe
