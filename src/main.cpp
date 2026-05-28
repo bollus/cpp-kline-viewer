@@ -63,6 +63,7 @@ public:
     if (visibleCount_ <= 0) visibleCount_ = std::min(160, candleCount());
     visibleStart_ = maxVisibleStart();
     hoveredIndex_ = -1;
+    emitVisibleRange();
     update();
   }
 
@@ -79,6 +80,7 @@ public:
     const int previousIndex = indexAtTime(previousFirst);
     if (previousIndex > 0) visibleStart_ += previousIndex;
     visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
+    emitVisibleRange();
     update();
   }
 
@@ -104,6 +106,7 @@ public:
     } else {
       candles_.insert(it, candle);
     }
+    emitVisibleRange();
     update();
   }
 
@@ -121,6 +124,7 @@ signals:
   void hoveredCandleChanged(const Candle *candle);
   void olderCandlesRequested(qint64 beforeMs);
   void overlayRangeChanged(qint64 startMs, qint64 endMs);
+  void visibleRangeChanged(qint64 startMs, qint64 endMs, int firstIndex, int lastIndex);
 
 protected:
   void paintEvent(QPaintEvent *) override {
@@ -150,6 +154,7 @@ protected:
       manualPriceOffset_ = dragPriceOffset_ + dy * dragPriceRange_ / std::max(1.0, plotRect().height());
       requestMoreIfNeeded();
       emitOverlayRange();
+      emitVisibleRange();
       update();
       return;
     }
@@ -158,6 +163,7 @@ protected:
       visibleCount_ = std::clamp(static_cast<int>(std::round(axisVisibleCount_ * std::exp(dx / 480.0))), 20, std::max(40, candleCount() + rightOffsetBars_));
       visibleStart_ = std::clamp(axisVisibleStart_, 0, maxVisibleStart());
       emitOverlayRange();
+      emitVisibleRange();
       update();
       return;
     }
@@ -236,6 +242,7 @@ protected:
     visibleStart_ = std::clamp(visibleStart_, 0, maxVisibleStart());
     requestMoreIfNeeded();
     emitOverlayRange();
+    emitVisibleRange();
     update();
   }
 
@@ -413,6 +420,16 @@ private:
     emit overlayRangeChanged(candles_[start].ms, candles_[end].ms + 20 * barIntervalMs());
   }
 
+  void emitVisibleRange() {
+    if (candles_.isEmpty()) {
+      emit visibleRangeChanged(0, 0, -1, -1);
+      return;
+    }
+    const int start = std::clamp(visibleStart_, 0, candleCount() - 1);
+    const int end = std::clamp(visibleEnd() - 1, 0, candleCount() - 1);
+    emit visibleRangeChanged(candles_[start].ms, candles_[end].ms, start, end);
+  }
+
   void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
     positionHitboxes_.clear();
     if (parsedOverlayEvents_.isEmpty() || candles_.isEmpty()) return;
@@ -586,18 +603,20 @@ private:
     if (start <= 0) start = jsonMs(fvg.value("k1_time").isUndefined() ? fvg.value("create_time") : fvg.value("k1_time"));
     const qint64 end = jsonMs(fvg.value("ifvg_time").isUndefined() ? signal.value("time") : fvg.value("ifvg_time"));
     if (!std::isfinite(top) || !std::isfinite(bottom) || start <= 0 || end <= 0) return;
-    const QString direction = signal.value("direction").toString(event.value("direction").toString());
-    const QString key = QString("%1:%2:%3:%4:%5").arg(direction).arg(start).arg(end).arg(top, 0, 'g', 14).arg(bottom, 0, 'g', 14);
+    const QString key = QString("%1:%2:%3:%4").arg(start).arg(end).arg(top, 0, 'g', 14).arg(bottom, 0, 'g', 14);
     if (drawn.contains(key)) return;
     drawn.insert(key);
     const double startIndex = indexForTime(start);
     const double endIndex = std::max(startIndex, static_cast<double>(indexAtTime(end) - 1));
     QRectF box(pointAtIndex(startIndex, top, minPrice, maxPrice), pointAtIndex(endIndex, bottom, minPrice, maxPrice));
     box = box.normalized();
+    p.save();
     p.fillRect(box, QColor(110, 215, 246, 128));
+    p.setBrush(Qt::NoBrush);
     p.setPen(QPen(QColor(147, 197, 253, 210), 1));
     p.drawRect(box);
     p.drawText(box.topLeft() + QPointF(4, -4), "iFVG");
+    p.restore();
   }
 
   void drawPositionEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, double minPrice, double maxPrice) {
@@ -1341,6 +1360,7 @@ class MainWindow : public QMainWindow {
 public:
   MainWindow() {
     setWindowTitle("Q4J Market Structure Desk");
+    setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
     resize(1440, 860);
     buildUi();
     bindSignals();
@@ -1352,13 +1372,72 @@ public:
     }
   }
 
+protected:
+  bool eventFilter(QObject *watched, QEvent *event) override {
+    if (watched == titleBar_) {
+      if (event->type() == QEvent::MouseButtonDblClick) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() == Qt::LeftButton) {
+          toggleMaximized();
+          return true;
+        }
+      }
+      if (event->type() == QEvent::MouseButtonPress) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() == Qt::LeftButton) {
+          windowDragging_ = true;
+          windowDragStart_ = mouse->globalPosition().toPoint() - frameGeometry().topLeft();
+          return true;
+        }
+      }
+      if (event->type() == QEvent::MouseMove && windowDragging_) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (!isMaximized()) move(mouse->globalPosition().toPoint() - windowDragStart_);
+        return true;
+      }
+      if (event->type() == QEvent::MouseButtonRelease) {
+        windowDragging_ = false;
+        return true;
+      }
+    }
+    return QMainWindow::eventFilter(watched, event);
+  }
+
 private:
   void buildUi() {
     auto *root = new QWidget;
+    root->setObjectName("appShell");
     auto *layout = new QVBoxLayout(root);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
     setCentralWidget(root);
+
+    titleBar_ = new QFrame;
+    titleBar_->setObjectName("titleBar");
+    titleBar_->installEventFilter(this);
+    auto *titleLayout = new QHBoxLayout(titleBar_);
+    titleLayout->setContentsMargins(10, 0, 6, 0);
+    titleLayout->setSpacing(8);
+    auto *titleBadge = new QLabel("Q4J");
+    titleBadge->setObjectName("titleBadge");
+    auto *titleText = new QLabel("Execution Map");
+    titleText->setObjectName("titleText");
+    minimize_ = new QPushButton("−");
+    maximize_ = new QPushButton("□");
+    close_ = new QPushButton("×");
+    minimize_->setObjectName("windowButton");
+    maximize_->setObjectName("windowButton");
+    close_->setObjectName("closeButton");
+    minimize_->setFixedSize(30, 24);
+    maximize_->setFixedSize(30, 24);
+    close_->setFixedSize(34, 24);
+    titleLayout->addWidget(titleBadge);
+    titleLayout->addWidget(titleText);
+    titleLayout->addStretch(1);
+    titleLayout->addWidget(minimize_);
+    titleLayout->addWidget(maximize_);
+    titleLayout->addWidget(close_);
+    layout->addWidget(titleBar_);
 
     auto *header = new QFrame;
     header->setObjectName("header");
@@ -1381,22 +1460,26 @@ private:
 
     symbol_ = new QLineEdit("JP225");
     symbol_->setObjectName("symbolInput");
+    symbol_->setPlaceholderText("Symbol");
     interval_ = new QComboBox;
     interval_->setObjectName("intervalInput");
     interval_->addItems({"1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d"});
     settings_ = new QPushButton("策略设置");
+    settings_->setObjectName("toolButton");
     backend_ = new QPushButton("后端");
+    backend_->setObjectName("toolButton");
     theme_ = new QPushButton("☾");
+    theme_->setObjectName("iconButton");
     refresh_ = new QPushButton("刷新");
     refresh_->setObjectName("refreshButton");
     status_ = new QLabel("连接中");
     status_->setObjectName("status");
-    symbol_->setFixedWidth(150);
-    interval_->setFixedWidth(76);
-    settings_->setFixedWidth(76);
-    backend_->setFixedWidth(54);
-    theme_->setFixedWidth(42);
-    refresh_->setFixedWidth(62);
+    symbol_->setFixedWidth(132);
+    interval_->setFixedWidth(62);
+    settings_->setFixedWidth(70);
+    backend_->setFixedWidth(48);
+    theme_->setFixedWidth(34);
+    refresh_->setFixedWidth(56);
     status_->setFixedWidth(86);
     headerLayout->addWidget(symbol_);
     headerLayout->addWidget(interval_);
@@ -1491,6 +1574,10 @@ private:
 
   void bindSignals() {
     connect(refresh_, &QPushButton::clicked, this, &MainWindow::refresh);
+    connect(symbol_, &QLineEdit::returnPressed, this, &MainWindow::refresh);
+    connect(minimize_, &QPushButton::clicked, this, &QWidget::showMinimized);
+    connect(maximize_, &QPushButton::clicked, this, &MainWindow::toggleMaximized);
+    connect(close_, &QPushButton::clicked, this, &QWidget::close);
     connect(backend_, &QPushButton::clicked, this, [this] {
       showBackendDialog(false);
     });
@@ -1508,6 +1595,15 @@ private:
     connect(&client_, &CandleClient::candleUpdated, chart_, &ChartWidget::upsertCandle);
     connect(chart_, &ChartWidget::olderCandlesRequested, &client_, &CandleClient::loadOlder);
     connect(chart_, &ChartWidget::overlayRangeChanged, &client_, &CandleClient::loadOverlayRange);
+    connect(chart_, &ChartWidget::visibleRangeChanged, this, [this](qint64 startMs, qint64 endMs, int firstIndex, int lastIndex) {
+      if (startMs <= 0 || endMs <= 0 || firstIndex < 0 || lastIndex < 0) {
+        range_->setText("Visible Range --");
+        return;
+      }
+      const QString start = QDateTime::fromMSecsSinceEpoch(startMs).toString("yyyy-MM-dd HH:mm");
+      const QString end = QDateTime::fromMSecsSinceEpoch(endMs).toString("yyyy-MM-dd HH:mm");
+      range_->setText(QString("Visible Range  %1 → %2  [%3-%4]").arg(start, end).arg(firstIndex).arg(lastIndex));
+    });
     connect(&client_, &CandleClient::statusChanged, this, [this](const QString &status, bool live) {
       status_->setText((live ? "● " : "○ ") + status);
     });
@@ -1523,14 +1619,57 @@ private:
   void applyTheme() {
     chart_->setDark(dark_);
     theme_->setText(dark_ ? "☾" : "☀");
+    if (maximize_) maximize_->setText(isMaximized() ? "❐" : "□");
     const QString css = dark_ ? darkCss() : lightCss();
     qApp->setStyleSheet(css);
+  }
+
+  void toggleMaximized() {
+    if (isMaximized()) showNormal();
+    else showMaximized();
+    if (maximize_) maximize_->setText(isMaximized() ? "❐" : "□");
   }
 
   QString darkCss() const {
     return R"(
       QWidget { background: #080c0b; color: #f4efe3; font-family: "Roboto Flex", "SF Pro Text", "Segoe UI", "PingFang SC"; font-size: 12px; }
       QMainWindow { background: #080c0b; }
+      QWidget#appShell {
+        background: #080c0b;
+        border: 1px solid rgba(230, 226, 211, 48);
+      }
+      QFrame#titleBar {
+        min-height: 32px; max-height: 32px;
+        background: #101612;
+        border: 1px solid rgba(230, 226, 211, 42);
+        border-radius: 3px;
+      }
+      QLabel#titleBadge {
+        min-width: 30px; max-width: 30px; min-height: 20px; max-height: 20px;
+        background: #f0b64f;
+        color: #111813;
+        font-size: 10px;
+        font-weight: 950;
+        qproperty-alignment: AlignCenter;
+      }
+      QLabel#titleText {
+        background: transparent;
+        color: #f4efe3;
+        font-size: 12px;
+        font-weight: 850;
+      }
+      QPushButton#windowButton, QPushButton#closeButton {
+        min-height: 24px; max-height: 24px;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 2px;
+        padding: 0;
+        color: #a7b0a8;
+        font-size: 14px;
+        font-weight: 850;
+      }
+      QPushButton#windowButton:hover { background: rgba(230, 226, 211, 22); border-color: rgba(230, 226, 211, 44); color: #f4efe3; }
+      QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
       QFrame#header, QFrame#footer {
         background: #0e1311;
         border: 1px solid rgba(230, 226, 211, 34);
@@ -1562,7 +1701,72 @@ private:
         font-weight: 750;
       }
       QLineEdit#symbolInput { font-size: 13px; font-weight: 850; }
+      QLineEdit#symbolInput {
+        min-height: 28px; max-height: 28px;
+        background: #111815;
+        border: 1px solid rgba(230, 226, 211, 42);
+        border-left: 2px solid #f0b64f;
+        border-radius: 1px;
+        padding: 0 9px;
+        color: #f4efe3;
+        selection-background-color: #f0b64f;
+        selection-color: #111813;
+      }
+      QComboBox#intervalInput {
+        min-height: 28px; max-height: 28px;
+        background: #151d19;
+        border: 1px solid rgba(230, 226, 211, 38);
+        border-radius: 1px;
+        padding: 0 18px 0 9px;
+        color: #f4efe3;
+        font-size: 12px;
+        font-weight: 900;
+      }
+      QComboBox#intervalInput::drop-down {
+        width: 16px;
+        border: 0;
+        background: transparent;
+      }
+      QComboBox#intervalInput::down-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+      }
+      QPushButton#toolButton {
+        min-height: 28px; max-height: 28px;
+        background: transparent;
+        border: 1px solid rgba(230, 226, 211, 38);
+        border-radius: 1px;
+        padding: 0 9px;
+        color: #d9d4c7;
+        font-size: 12px;
+        font-weight: 850;
+      }
+      QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
+        background: #18211d;
+        border-color: rgba(240, 182, 79, 150);
+      }
+      QLineEdit#symbolInput:focus, QComboBox#intervalInput:focus, QPushButton#toolButton:focus {
+        border-color: #f0b64f;
+      }
+      QPushButton#iconButton {
+        min-height: 28px; max-height: 28px;
+        background: transparent;
+        border: 1px solid rgba(230, 226, 211, 34);
+        border-radius: 1px;
+        padding: 0;
+        color: #f0b64f;
+        font-size: 14px;
+        font-weight: 900;
+      }
       QPushButton#refreshButton { background: #f0b64f; border-color: #f0b64f; color: #111813; }
+      QPushButton#refreshButton {
+        min-height: 28px; max-height: 28px;
+        border-radius: 1px;
+        padding: 0 8px;
+        font-size: 12px;
+        font-weight: 900;
+      }
       QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #f0b64f; }
       QLabel#status {
         background: transparent;
@@ -1581,6 +1785,42 @@ private:
     return R"(
       QWidget { background: #eef0eb; color: #131916; font-family: "Roboto Flex", "SF Pro Text", "Segoe UI", "PingFang SC"; font-size: 12px; }
       QMainWindow { background: #eef0eb; }
+      QWidget#appShell {
+        background: #eef0eb;
+        border: 1px solid rgba(23, 31, 27, 48);
+      }
+      QFrame#titleBar {
+        min-height: 32px; max-height: 32px;
+        background: #fbfaf4;
+        border: 1px solid rgba(23, 31, 27, 42);
+        border-radius: 3px;
+      }
+      QLabel#titleBadge {
+        min-width: 30px; max-width: 30px; min-height: 20px; max-height: 20px;
+        background: #f0b64f;
+        color: #111813;
+        font-size: 10px;
+        font-weight: 950;
+        qproperty-alignment: AlignCenter;
+      }
+      QLabel#titleText {
+        background: transparent;
+        color: #131916;
+        font-size: 12px;
+        font-weight: 850;
+      }
+      QPushButton#windowButton, QPushButton#closeButton {
+        min-height: 24px; max-height: 24px;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 2px;
+        padding: 0;
+        color: #59635d;
+        font-size: 14px;
+        font-weight: 850;
+      }
+      QPushButton#windowButton:hover { background: rgba(23, 31, 27, 22); border-color: rgba(23, 31, 27, 44); color: #131916; }
+      QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
       QFrame#header, QFrame#footer {
         background: #fffdf7;
         border: 1px solid rgba(23, 31, 27, 34);
@@ -1612,7 +1852,72 @@ private:
         font-weight: 750;
       }
       QLineEdit#symbolInput { font-size: 13px; font-weight: 850; }
+      QLineEdit#symbolInput {
+        min-height: 28px; max-height: 28px;
+        background: #fffdf7;
+        border: 1px solid rgba(23, 31, 27, 40);
+        border-left: 2px solid #b27a17;
+        border-radius: 1px;
+        padding: 0 9px;
+        color: #131916;
+        selection-background-color: #f0b64f;
+        selection-color: #111813;
+      }
+      QComboBox#intervalInput {
+        min-height: 28px; max-height: 28px;
+        background: #f7f8f2;
+        border: 1px solid rgba(23, 31, 27, 38);
+        border-radius: 1px;
+        padding: 0 18px 0 9px;
+        color: #131916;
+        font-size: 12px;
+        font-weight: 900;
+      }
+      QComboBox#intervalInput::drop-down {
+        width: 16px;
+        border: 0;
+        background: transparent;
+      }
+      QComboBox#intervalInput::down-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+      }
+      QPushButton#toolButton {
+        min-height: 28px; max-height: 28px;
+        background: transparent;
+        border: 1px solid rgba(23, 31, 27, 38);
+        border-radius: 1px;
+        padding: 0 9px;
+        color: #3b443e;
+        font-size: 12px;
+        font-weight: 850;
+      }
+      QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
+        background: #ffffff;
+        border-color: rgba(178, 122, 23, 150);
+      }
+      QLineEdit#symbolInput:focus, QComboBox#intervalInput:focus, QPushButton#toolButton:focus {
+        border-color: #b27a17;
+      }
+      QPushButton#iconButton {
+        min-height: 28px; max-height: 28px;
+        background: transparent;
+        border: 1px solid rgba(23, 31, 27, 34);
+        border-radius: 1px;
+        padding: 0;
+        color: #b27a17;
+        font-size: 14px;
+        font-weight: 900;
+      }
       QPushButton#refreshButton { background: #f0b64f; border-color: #d79b2f; color: #111813; }
+      QPushButton#refreshButton {
+        min-height: 28px; max-height: 28px;
+        border-radius: 1px;
+        padding: 0 8px;
+        font-size: 12px;
+        font-weight: 900;
+      }
       QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #b27a17; }
       QLabel#status {
         background: transparent;
@@ -1629,11 +1934,13 @@ private:
 
   void refresh() {
     events_->setText("Events --");
+    range_->setText("Visible Range --");
     chart_->setOverlayEvents({});
     client_.load(symbol_->text(), interval_->currentText(), higher_->currentText(), lower_->currentText());
   }
 
   ChartWidget *chart_ = nullptr;
+  QFrame *titleBar_ = nullptr;
   QLineEdit *symbol_ = nullptr;
   QComboBox *interval_ = nullptr;
   QComboBox *higher_ = nullptr;
@@ -1642,6 +1949,9 @@ private:
   QPushButton *backend_ = nullptr;
   QPushButton *theme_ = nullptr;
   QPushButton *refresh_ = nullptr;
+  QPushButton *minimize_ = nullptr;
+  QPushButton *maximize_ = nullptr;
+  QPushButton *close_ = nullptr;
   QLabel *status_ = nullptr;
   QLabel *ohlc_ = nullptr;
   QLabel *range_ = nullptr;
@@ -1652,6 +1962,8 @@ private:
   QLineEdit *wsUrl_ = nullptr;
   CandleClient client_;
   bool dark_ = true;
+  bool windowDragging_ = false;
+  QPoint windowDragStart_;
 };
 
 int main(int argc, char **argv) {
