@@ -1787,6 +1787,24 @@ private:
     titleBadge->setObjectName("titleBadge");
     auto *titleText = new QLabel("Execution Map");
     titleText->setObjectName("titleText");
+#ifdef Q_OS_MACOS
+    minimize_ = new QPushButton;
+    maximize_ = new QPushButton;
+    close_ = new QPushButton;
+    close_->setObjectName("macCloseButton");
+    minimize_->setObjectName("macMinimizeButton");
+    maximize_->setObjectName("macMaximizeButton");
+    close_->setFixedSize(13, 13);
+    minimize_->setFixedSize(13, 13);
+    maximize_->setFixedSize(13, 13);
+    titleLayout->addWidget(close_);
+    titleLayout->addWidget(minimize_);
+    titleLayout->addWidget(maximize_);
+    titleLayout->addSpacing(8);
+    titleLayout->addWidget(titleBadge);
+    titleLayout->addWidget(titleText);
+    titleLayout->addStretch(1);
+#else
     minimize_ = new QPushButton("−");
     maximize_ = new QPushButton("▢");
     close_ = new QPushButton("×");
@@ -1802,6 +1820,7 @@ private:
     titleLayout->addWidget(minimize_);
     titleLayout->addWidget(maximize_);
     titleLayout->addWidget(close_);
+#endif
     layout->addWidget(titleBar_);
 
     auto *header = new QFrame;
@@ -2063,6 +2082,18 @@ private:
       }
       QPushButton#windowButton:hover { background: rgba(230, 226, 211, 22); border-color: rgba(230, 226, 211, 44); color: #f4efe3; }
       QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
+      QPushButton#macCloseButton, QPushButton#macMinimizeButton, QPushButton#macMaximizeButton {
+        min-width: 13px; max-width: 13px; min-height: 13px; max-height: 13px;
+        border-radius: 6px;
+        border: 1px solid rgba(0, 0, 0, 70);
+        padding: 0;
+      }
+      QPushButton#macCloseButton { background: #ff5f57; }
+      QPushButton#macMinimizeButton { background: #febc2e; }
+      QPushButton#macMaximizeButton { background: #28c840; }
+      QPushButton#macCloseButton:hover, QPushButton#macMinimizeButton:hover, QPushButton#macMaximizeButton:hover {
+        border-color: rgba(255, 255, 255, 130);
+      }
       QFrame#header, QFrame#footer {
         background: #0e1311;
         border: 1px solid rgba(230, 226, 211, 34);
@@ -2224,6 +2255,18 @@ private:
       }
       QPushButton#windowButton:hover { background: rgba(23, 31, 27, 22); border-color: rgba(23, 31, 27, 44); color: #131916; }
       QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
+      QPushButton#macCloseButton, QPushButton#macMinimizeButton, QPushButton#macMaximizeButton {
+        min-width: 13px; max-width: 13px; min-height: 13px; max-height: 13px;
+        border-radius: 6px;
+        border: 1px solid rgba(0, 0, 0, 70);
+        padding: 0;
+      }
+      QPushButton#macCloseButton { background: #ff5f57; }
+      QPushButton#macMinimizeButton { background: #febc2e; }
+      QPushButton#macMaximizeButton { background: #28c840; }
+      QPushButton#macCloseButton:hover, QPushButton#macMinimizeButton:hover, QPushButton#macMaximizeButton:hover {
+        border-color: rgba(0, 0, 0, 110);
+      }
       QFrame#header, QFrame#footer {
         background: #fffdf7;
         border: 1px solid rgba(23, 31, 27, 34);
