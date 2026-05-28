@@ -37,23 +37,30 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          choco install winrar --yes --no-progress
-          $winrar = "${env:ProgramFiles}\WinRAR\WinRAR.exe"
-          if (!(Test-Path $winrar)) { $winrar = "${env:ProgramFiles(x86)}\WinRAR\WinRAR.exe" }
-          if (!(Test-Path $winrar)) { throw "WinRAR.exe not found" }
+          $sevenZip = "${env:ProgramFiles}\7-Zip\7z.exe"
+          if (!(Test-Path $sevenZip)) { throw "7z.exe not found" }
+          $sfx = "${env:ProgramFiles}\7-Zip\7z.sfx"
+          if (!(Test-Path $sfx)) { throw "7z.sfx not found" }
+
+          Push-Location build/package
+          & $sevenZip a -t7z ..\package.7z *
+          Pop-Location
 
           $config = @"
-          ;The comment below contains SFX script commands
-
-          Path=%TEMP%\q4j-kline-viewer
-          SavePath
-          Setup=q4j_kline_viewer.exe
-          Silent=1
-          Overwrite=1
-          Title=Q4J K-Line Viewer
+          ;!@Install@!UTF-8!
+          Title="Q4J K-Line Viewer"
+          BeginPrompt="Run Q4J K-Line Viewer?"
+          RunProgram="q4j_kline_viewer.exe"
+          GUIMode="2"
+          ;!@InstallEnd@!
           "@
-          Set-Content -Path build/sfx-comment.txt -Value $config -Encoding ASCII
-          & $winrar a -r -sfx -zbuild/sfx-comment.txt build/q4j-kline-viewer-windows.exe build/package/*
+          Set-Content -Path build/sfx-config.txt -Value $config -Encoding UTF8
+          cmd /c copy /b "`"$sfx`" + build\sfx-config.txt + build\package.7z build\q4j-kline-viewer-windows.exe"
+          if (!(Test-Path build/q4j-kline-viewer-windows.exe)) { throw "SFX exe was not created" }
+
+      - name: List package output
+        shell: pwsh
+        run: Get-ChildItem -Recurse build | Select-Object FullName, Length
 
       - name: Upload Windows exe
         uses: actions/upload-artifact@v4
