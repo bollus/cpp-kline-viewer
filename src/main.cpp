@@ -433,6 +433,8 @@ private:
   void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
     positionHitboxes_.clear();
     if (parsedOverlayEvents_.isEmpty() || candles_.isEmpty()) return;
+    p.save();
+    p.setClipRect(plotRect());
     QFont label = font();
     label.setPixelSize(10);
     label.setWeight(QFont::DemiBold);
@@ -461,6 +463,7 @@ private:
         }
       }
     }
+    p.restore();
   }
 
   QJsonObject parsePayload(const QJsonObject &event) const {
@@ -1071,7 +1074,7 @@ private:
     const Candle &c = candles_[hoveredIndex_];
     const bool green = c.close >= c.open;
     const QColor color = green ? up() : down();
-    QRectF panel(width() - 224, 18, 142, 150);
+    QRectF panel(width() - 244, 18, 142, 150);
     p.setPen(QPen(dark_ ? QColor(230, 226, 211, 34) : QColor(23, 31, 27, 34), 1));
     p.setBrush(dark_ ? QColor(14, 19, 17, 178) : QColor(255, 253, 247, 210));
     p.drawRect(panel);
@@ -1162,11 +1165,18 @@ public:
 
   QString backendBase() const { return backendBase_; }
   QString wsBase() const { return wsBase_; }
+  bool realtimeEnabled() const { return realtimeEnabled_; }
 
-  void configureBackend(const QString &backendBase, const QString &wsBase) {
+  void configureBackend(const QString &backendBase, const QString &wsBase, bool realtimeEnabled) {
     backendBase_ = normalizeBase(backendBase.trimmed());
     wsBase_ = normalizeBase(wsBase.trimmed().isEmpty() ? wsFromHttp(backendBase_) : wsBase.trimmed());
-    socket_.close();
+    realtimeEnabled_ = realtimeEnabled;
+    if (!realtimeEnabled_) {
+      socket_.close();
+      emit statusChanged("实时关闭", false);
+    } else {
+      socket_.close();
+    }
   }
 
   void load(const QString &symbol, const QString &interval, const QString &higherInterval, const QString &lowerInterval) {
@@ -1211,7 +1221,8 @@ public:
       updateKnownRange(candles);
       emit candlesLoaded(candles);
       fetchOverlayEvents(knownStartMs_, knownEndMs_ + intervalMs(interval_) * 20);
-      connectSocket();
+      if (realtimeEnabled_) connectSocket();
+      else emit statusChanged("实时关闭", false);
     });
   }
 
@@ -1268,6 +1279,11 @@ private:
   }
 
   void connectSocket() {
+    if (!realtimeEnabled_) {
+      socket_.close();
+      emit statusChanged("实时关闭", false);
+      return;
+    }
     socket_.close();
     QUrl url(wsBase_ + "/ws/candles");
     QUrlQuery query;
@@ -1347,6 +1363,7 @@ private:
   QNetworkAccessManager network_;
   QWebSocket socket_;
   bool loadingOlder_ = false;
+  bool realtimeEnabled_ = true;
   qint64 knownStartMs_ = 0;
   qint64 knownEndMs_ = 0;
   qint64 overlayLoadedStartMs_ = 0;
@@ -1537,13 +1554,16 @@ private:
     auto *form = new QFormLayout;
     backendUrl_ = new QLineEdit(client_.backendBase());
     wsUrl_ = new QLineEdit(client_.wsBase());
+    realtime_ = new QCheckBox("启用实时 K 线");
+    realtime_->setChecked(client_.realtimeEnabled());
     backendUrl_->setPlaceholderText("http://127.0.0.1:8080");
     wsUrl_->setPlaceholderText("留空则从 HTTP 地址自动推导");
     form->addRow("HTTP 后端", backendUrl_);
     form->addRow("WebSocket", wsUrl_);
+    form->addRow("实时", realtime_);
     layout->addLayout(form);
 
-    auto *hint = new QLabel("HTTP 地址用于 /api/candles，WebSocket 地址用于 /ws/candles。");
+    auto *hint = new QLabel("HTTP 地址用于 /api/candles；关闭实时 K 线后不会连接 /ws/candles。");
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
@@ -1557,6 +1577,7 @@ private:
     if (!backendDialog_) return false;
     backendUrl_->setText(client_.backendBase());
     wsUrl_->setText(client_.wsBase());
+    realtime_->setChecked(client_.realtimeEnabled());
     while (true) {
       if (backendDialog_->exec() != QDialog::Accepted) {
         return false;
@@ -1566,7 +1587,7 @@ private:
         QMessageBox::warning(this, "后端接口", "HTTP 后端地址不能为空。");
         continue;
       }
-      client_.configureBackend(backend, wsUrl_->text());
+      client_.configureBackend(backend, wsUrl_->text(), realtime_->isChecked());
       if (!startup) refresh();
       return true;
     }
@@ -1960,6 +1981,7 @@ private:
   QDialog *backendDialog_ = nullptr;
   QLineEdit *backendUrl_ = nullptr;
   QLineEdit *wsUrl_ = nullptr;
+  QCheckBox *realtime_ = nullptr;
   CandleClient client_;
   bool dark_ = true;
   bool windowDragging_ = false;
