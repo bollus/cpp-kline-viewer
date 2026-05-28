@@ -34,8 +34,8 @@ jobs:
           mkdir -p build/package
           ditto -c -k --sequesterRsrc --keepParent build/q4j_kline_viewer.app build/package/q4j-kline-viewer-macos.zip
 
-      - name: Upload artifact
+      - name: Upload macOS app
         uses: actions/upload-artifact@v4
         with:
           name: q4j-kline-viewer-macos
-          path: build/package/**
+          path: build/package/q4j-kline-viewer-macos.zip

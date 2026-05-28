@@ -33,8 +33,30 @@ jobs:
           Copy-Item build/Release/q4j_kline_viewer.exe build/package/
           windeployqt --release --compiler-runtime build/package/q4j_kline_viewer.exe
 
-      - name: Upload artifact
+      - name: Create single Windows exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install winrar --yes --no-progress
+          $winrar = "${env:ProgramFiles}\WinRAR\WinRAR.exe"
+          if (!(Test-Path $winrar)) { $winrar = "${env:ProgramFiles(x86)}\WinRAR\WinRAR.exe" }
+          if (!(Test-Path $winrar)) { throw "WinRAR.exe not found" }
+
+          $config = @"
+          ;The comment below contains SFX script commands
+
+          Path=%TEMP%\q4j-kline-viewer
+          SavePath
+          Setup=q4j_kline_viewer.exe
+          Silent=1
+          Overwrite=1
+          Title=Q4J K-Line Viewer
+          "@
+          Set-Content -Path build/sfx-comment.txt -Value $config -Encoding ASCII
+          & $winrar a -r -sfx -zbuild/sfx-comment.txt build/q4j-kline-viewer-windows.exe build/package/*
+
+      - name: Upload Windows exe
         uses: actions/upload-artifact@v4
         with:
-          name: q4j-kline-viewer-windows
-          path: build/package/**
+          name: q4j-kline-viewer-windows-exe
+          path: build/q4j-kline-viewer-windows.exe
