@@ -1,0 +1,41 @@
+name: Build Windows C++ K-Line Viewer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "**"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.6.3"
+          modules: "qtwebsockets"
+          cache: true
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Deploy Qt runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/package | Out-Null
+          Copy-Item build/Release/q4j_kline_viewer.exe build/package/
+          windeployqt --release --compiler-runtime build/package/q4j_kline_viewer.exe
+          Compress-Archive -Path build/package/* -DestinationPath build/q4j-kline-viewer-windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: q4j-kline-viewer-windows
+          path: build/q4j-kline-viewer-windows.zip
