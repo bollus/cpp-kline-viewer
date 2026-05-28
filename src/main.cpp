@@ -1,6 +1,7 @@
 #include <QtWidgets>
 #include <QtNetwork>
 #include <QtWebSockets/QWebSocket>
+#include <QOpenGLWidget>
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -40,11 +41,11 @@ static qint64 intervalMs(const QString &interval) {
   return values.value(interval, 60000);
 }
 
-class ChartWidget : public QWidget {
+class ChartWidget : public QOpenGLWidget {
   Q_OBJECT
 
 public:
-  explicit ChartWidget(QWidget *parent = nullptr) : QWidget(parent) {
+  explicit ChartWidget(QWidget *parent = nullptr) : QOpenGLWidget(parent) {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
   }
