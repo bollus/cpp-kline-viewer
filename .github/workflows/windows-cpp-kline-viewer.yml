@@ -55,8 +55,16 @@ jobs:
           ;!@InstallEnd@!
           "@
           Set-Content -Path build/sfx-config.txt -Value $config -Encoding UTF8
-          cmd /c copy /b "`"$sfx`" + build\sfx-config.txt + build\package.7z build\q4j-kline-viewer-windows.exe"
+          $out = "build/q4j-kline-viewer-windows.exe"
+          $outStream = [System.IO.File]::Open($out, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+          foreach ($part in @($sfx, "build/sfx-config.txt", "build/package.7z")) {
+            if (!(Test-Path $part)) { throw "Missing SFX part: $part" }
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $part))
+            $outStream.Write($bytes, 0, $bytes.Length)
+          }
+          $outStream.Close()
           if (!(Test-Path build/q4j-kline-viewer-windows.exe)) { throw "SFX exe was not created" }
+          Get-Item build/q4j-kline-viewer-windows.exe | Format-List FullName,Length
 
       - name: List package output
         shell: pwsh
