@@ -421,7 +421,6 @@ private:
     label.setWeight(QFont::DemiBold);
     p.setFont(label);
 
-    QSet<QString> drawnIfvgs;
     for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
       const QJsonObject event = parsed.event;
       const QString type = event.value("eventType").toString();
@@ -433,9 +432,18 @@ private:
         drawNEvent(p, payload.value("base_n").toObject(), QColor(230, 226, 211, 120), "Base", minPrice, maxPrice);
         drawNEvent(p, payload.value("signal_n").toObject(), QColor(39, 212, 177, 220), "N-IN", minPrice, maxPrice);
       }
-      if (ifvgVisible_ && (type == "ENTRY_SIGNAL_OPEN_SENT" || type == "POSITION_OPEN_FILLED")) drawIfvgEvent(p, payload, event, drawnIfvgs, minPrice, maxPrice);
     }
     if (orderVisible_) drawPositions(p, minPrice, maxPrice);
+    if (ifvgVisible_) {
+      QSet<QString> drawnIfvgs;
+      for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+        const QJsonObject event = parsed.event;
+        const QString type = event.value("eventType").toString();
+        if (type == "ENTRY_SIGNAL_OPEN_SENT" || type == "POSITION_OPEN_FILLED") {
+          drawIfvgEvent(p, parsed.payload, event, drawnIfvgs, minPrice, maxPrice);
+        }
+      }
+    }
   }
 
   QJsonObject parsePayload(const QJsonObject &event) const {
@@ -582,10 +590,12 @@ private:
     const QString key = QString("%1:%2:%3:%4:%5").arg(direction).arg(start).arg(end).arg(top, 0, 'g', 14).arg(bottom, 0, 'g', 14);
     if (drawn.contains(key)) return;
     drawn.insert(key);
-    QRectF box(pointAtTime(start, top, minPrice, maxPrice), pointAtTime(end, bottom, minPrice, maxPrice));
+    const double startIndex = indexForTime(start);
+    const double endIndex = std::max(startIndex, static_cast<double>(indexAtTime(end) - 1));
+    QRectF box(pointAtIndex(startIndex, top, minPrice, maxPrice), pointAtIndex(endIndex, bottom, minPrice, maxPrice));
     box = box.normalized();
-    p.fillRect(box, QColor(110, 215, 246, 72));
-    p.setPen(QPen(QColor(37, 99, 235, 224), 1));
+    p.fillRect(box, QColor(110, 215, 246, 128));
+    p.setPen(QPen(QColor(147, 197, 253, 210), 1));
     p.drawRect(box);
     p.drawText(box.topLeft() + QPointF(4, -4), "iFVG");
   }
@@ -762,13 +772,14 @@ private:
     drawLineAt(p, position.entryTime, end, entry, dark_ ? QColor(244, 239, 232, 225) : QColor(55, 65, 81, 245), Qt::SolidLine, minPrice, maxPrice);
 
     if (markerVisible_) {
-      drawMarker(p, position.entryTime, entry, isLong, isLong ? up() : down(), isLong ? "L" : "S", minPrice, maxPrice);
+      const QString qty = std::isfinite(position.quantity) ? QString(" %1").arg(QString::number(position.quantity, 'g', 4)) : "";
+      drawEntryMarker(p, position.entryTime, entry, isLong, isLong ? up() : down(), QString("%1%2").arg(isLong ? "L" : "S", qty), minPrice, maxPrice);
       for (const PositionPartial &partial : position.partials) {
         drawCircleMarker(p, partial.time, partial.exitPrice, QColor("#f0b64f"), "TP1", minPrice, maxPrice);
       }
       if (position.closed) {
         const QColor color = std::isfinite(position.totalPnl) && position.totalPnl >= 0 ? up() : down();
-        drawMarker(p, position.closeTime, std::isfinite(position.exitPrice) ? position.exitPrice : entry, !isLong, color, "Exit", minPrice, maxPrice);
+        drawBadgeMarker(p, position.closeTime, std::isfinite(position.exitPrice) ? position.exitPrice : entry, !isLong, color, "Exit", minPrice, maxPrice);
       }
     }
   }
@@ -795,6 +806,26 @@ private:
     if (!std::isfinite(a) || !std::isfinite(b) || std::abs(a - b) < 1e-9) return;
     QRectF area(pointAtTime(start, a, minPrice, maxPrice), pointAtTime(end, b, minPrice, maxPrice));
     p.fillRect(area.normalized(), fill);
+  }
+
+  void drawEntryMarker(QPainter &p, qint64 time, double price, bool isLong, const QColor &color, const QString &label, double minPrice, double maxPrice) {
+    drawBadgeMarker(p, time, price, isLong, color, label, minPrice, maxPrice);
+  }
+
+  void drawBadgeMarker(QPainter &p, qint64 time, double price, bool below, const QColor &color, const QString &label, double minPrice, double maxPrice) {
+    const QPointF anchor = pointAtTime(time, price, minPrice, maxPrice);
+    QFont f = font();
+    f.setPixelSize(10);
+    f.setWeight(QFont::Black);
+    p.setFont(f);
+    const QFontMetrics fm(f);
+    const QSize textSize = fm.size(Qt::TextSingleLine, label);
+    QRectF badge(anchor.x() - textSize.width() / 2.0 - 7, anchor.y() + (below ? 10 : -28), textSize.width() + 14, 18);
+    p.setPen(QPen(color, 1));
+    p.setBrush(dark_ ? QColor(11, 16, 15, 230) : QColor(255, 253, 247, 235));
+    p.drawRect(badge);
+    p.setPen(color);
+    p.drawText(badge, Qt::AlignCenter, label);
   }
 
   void drawMarker(QPainter &p, qint64 time, double price, bool upArrow, const QColor &color, const QString &label, double minPrice, double maxPrice) {
