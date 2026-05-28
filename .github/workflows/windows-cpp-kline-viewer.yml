@@ -32,10 +32,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path build/package | Out-Null
           Copy-Item build/Release/q4j_kline_viewer.exe build/package/
           windeployqt --release --compiler-runtime build/package/q4j_kline_viewer.exe
-          Compress-Archive -Path build/package/* -DestinationPath build/q4j-kline-viewer-windows.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: q4j-kline-viewer-windows
-          path: build/q4j-kline-viewer-windows.zip
+          path: build/package/**

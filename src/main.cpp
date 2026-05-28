@@ -96,8 +96,11 @@ protected:
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, false);
     paintBackground(p);
-    paintGrid(p);
+    double minPrice, maxPrice;
+    visibleRange(minPrice, maxPrice);
+    paintGrid(p, minPrice, maxPrice);
     paintCandles(p);
+    paintOverlays(p, minPrice, maxPrice);
     paintLayerHints(p);
     paintCrosshair(p);
     paintOhlcSketch(p);
@@ -214,17 +217,35 @@ private:
     p.fillRect(rect(), bg());
   }
 
-  void paintGrid(QPainter &p) {
+  void paintGrid(QPainter &p, double minPrice, double maxPrice) {
     const QRectF r = plotRect();
     p.setPen(QPen(grid(), 1));
+    QFont axisFont = font();
+    axisFont.setPixelSize(10);
+    axisFont.setWeight(QFont::DemiBold);
+    p.setFont(axisFont);
     for (int i = 0; i <= 5; ++i) {
       const double y = r.top() + r.height() * i / 5.0;
       p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+      const double price = maxPrice - (maxPrice - minPrice) * i / 5.0;
+      p.setPen(muted());
+      p.drawText(QRectF(r.right() + 8, y - 8, 62, 16), Qt::AlignVCenter | Qt::AlignLeft, QString::number(price, 'f', price > 100 ? 0 : 2));
+      p.setPen(QPen(grid(), 1));
     }
     for (int i = 0; i <= 8; ++i) {
       const double x = r.left() + r.width() * i / 8.0;
       p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+      const int candleIndex = visibleStart_ + static_cast<int>((visibleCount_ - 1) * i / 8.0);
+      if (candleIndex >= 0 && candleIndex < candleCount()) {
+        const QString label = QDateTime::fromMSecsSinceEpoch(candles_[candleIndex].ms).toString("MM-dd HH:mm");
+        p.setPen(muted());
+        p.drawText(QRectF(x - 42, r.bottom() + 8, 84, 16), Qt::AlignCenter, label);
+        p.setPen(QPen(grid(), 1));
+      }
     }
+    p.setPen(QPen(dark_ ? QColor(230, 226, 211, 46) : QColor(23, 31, 27, 48), 1));
+    p.drawLine(r.topRight(), r.bottomRight());
+    p.drawLine(r.bottomLeft(), r.bottomRight());
   }
 
   void paintCandles(QPainter &p) {
@@ -248,6 +269,118 @@ private:
       QRectF body(x - bodyWidth / 2.0, std::min(yOpen, yClose), bodyWidth, std::max(1.0, std::abs(yClose - yOpen)));
       p.fillRect(body, color);
       p.drawRect(body);
+    }
+  }
+
+  QPointF pointAt(int index, double price, double minPrice, double maxPrice) const {
+    const QRectF r = plotRect();
+    const double x = r.left() + (index - visibleStart_ + 0.5) * barStep();
+    return QPointF(x, yFor(price, minPrice, maxPrice));
+  }
+
+  int visibleEnd() const {
+    return std::min(candleCount(), visibleStart_ + visibleCount_);
+  }
+
+  void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
+    if (candles_.size() < 12) return;
+    const int start = visibleStart_;
+    const int end = visibleEnd();
+    if (end - start < 8) return;
+
+    double high = std::numeric_limits<double>::lowest();
+    double low = std::numeric_limits<double>::max();
+    for (int i = start; i < end; ++i) {
+      high = std::max(high, candles_[i].high);
+      low = std::min(low, candles_[i].low);
+    }
+
+    const QRectF r = plotRect();
+    QFont label = font();
+    label.setPixelSize(10);
+    label.setWeight(QFont::DemiBold);
+    p.setFont(label);
+
+    if (rangeVisible_) {
+      const double yHigh = yFor(high, minPrice, maxPrice);
+      const double yLow = yFor(low, minPrice, maxPrice);
+      p.setPen(QPen(QColor(114, 217, 247, 170), 1, Qt::DashLine));
+      p.drawLine(QPointF(r.left(), yHigh), QPointF(r.right(), yHigh));
+      p.drawLine(QPointF(r.left(), yLow), QPointF(r.right(), yLow));
+      p.setPen(QColor("#72d9f7"));
+      p.drawText(QPointF(r.left() + 8, yHigh - 5), "Range High");
+      p.drawText(QPointF(r.left() + 8, yLow + 13), "Range Low");
+    }
+
+    if (nVisible_) {
+      QVector<QPointF> pts;
+      const int a = start + (end - start) / 6;
+      const int b = start + (end - start) / 3;
+      const int c = start + (end - start) / 2;
+      const int d = start + (end - start) * 2 / 3;
+      pts << pointAt(a, candles_[a].low, minPrice, maxPrice)
+          << pointAt(b, candles_[b].high, minPrice, maxPrice)
+          << pointAt(c, candles_[c].low, minPrice, maxPrice)
+          << pointAt(d, candles_[d].high, minPrice, maxPrice);
+      p.setPen(QPen(QColor(240, 182, 79, 210), 2));
+      p.drawPolyline(pts.constData(), pts.size());
+      p.drawText(pts.last() + QPointF(6, -6), "N");
+    }
+
+    if (ninVisible_) {
+      QVector<QPointF> pts;
+      const int a = start + (end - start) / 2;
+      const int b = start + (end - start) * 5 / 8;
+      const int c = start + (end - start) * 3 / 4;
+      const int d = std::min(end - 1, start + (end - start) * 7 / 8);
+      pts << pointAt(a, candles_[a].high, minPrice, maxPrice)
+          << pointAt(b, candles_[b].low, minPrice, maxPrice)
+          << pointAt(c, candles_[c].high, minPrice, maxPrice)
+          << pointAt(d, candles_[d].low, minPrice, maxPrice);
+      p.setPen(QPen(QColor(39, 212, 177, 210), 2));
+      p.drawPolyline(pts.constData(), pts.size());
+      p.drawText(pts.last() + QPointF(6, 12), "N-IN");
+    }
+
+    if (ifvgVisible_) {
+      const int a = start + (end - start) * 3 / 5;
+      const int b = std::min(end - 1, a + std::max(4, (end - start) / 10));
+      const double top = high - (high - low) * 0.32;
+      const double bottom = high - (high - low) * 0.42;
+      QRectF box(pointAt(a, top, minPrice, maxPrice), pointAt(b, bottom, minPrice, maxPrice));
+      box = box.normalized();
+      p.fillRect(box, QColor(114, 217, 247, 58));
+      p.setPen(QPen(QColor(39, 212, 177, 190), 1));
+      p.drawRect(box);
+      p.drawText(box.topLeft() + QPointF(4, -4), "iFVG");
+    }
+
+    if (orderVisible_) {
+      const int a = start + (end - start) * 4 / 5;
+      const int b = std::min(end - 1, a + std::max(5, (end - start) / 8));
+      const double entry = candles_[a].close;
+      const double risk = (high - low) * 0.08;
+      const double target = entry + risk * 1.8;
+      const double stop = entry - risk;
+      QRectF reward(pointAt(a, target, minPrice, maxPrice), pointAt(b, entry, minPrice, maxPrice));
+      QRectF danger(pointAt(a, entry, minPrice, maxPrice), pointAt(b, stop, minPrice, maxPrice));
+      p.fillRect(reward.normalized(), QColor(32, 201, 151, 60));
+      p.fillRect(danger.normalized(), QColor(239, 95, 120, 62));
+      p.setPen(QPen(dark_ ? QColor(244, 239, 227, 225) : QColor(55, 65, 81, 245), 1));
+      p.drawLine(pointAt(a, entry, minPrice, maxPrice), pointAt(b, entry, minPrice, maxPrice));
+      p.drawText(pointAt(b, entry, minPrice, maxPrice) + QPointF(6, 4), "Entry");
+    }
+
+    if (markerVisible_) {
+      const int idx = start + (end - start) * 4 / 5;
+      const QPointF pos = pointAt(idx, candles_[idx].low, minPrice, maxPrice) + QPointF(0, 14);
+      QPolygonF arrow;
+      arrow << QPointF(pos.x(), pos.y() - 10) << QPointF(pos.x() - 5, pos.y()) << QPointF(pos.x() + 5, pos.y());
+      p.setBrush(up());
+      p.setPen(Qt::NoPen);
+      p.drawPolygon(arrow);
+      p.setPen(up());
+      p.drawText(pos + QPointF(8, 2), "L");
     }
   }
 
@@ -481,19 +614,31 @@ private:
     header->setObjectName("header");
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(9, 7, 9, 7);
-    headerLayout->setSpacing(12);
+    headerLayout->setSpacing(8);
 
-    auto *brand = new QLabel("<b>Q4J</b>&nbsp;&nbsp;Market Structure Desk<br><span style='font-size:18px'>Execution Map</span>");
-    headerLayout->addWidget(brand);
-    headerLayout->addSpacing(16);
+    auto *brandBox = new QWidget;
+    brandBox->setObjectName("brandBox");
+    auto *brandLayout = new QHBoxLayout(brandBox);
+    brandLayout->setContentsMargins(0, 0, 20, 0);
+    brandLayout->setSpacing(8);
+    auto *badge = new QLabel("Q4J");
+    badge->setObjectName("brandBadge");
+    auto *brandText = new QLabel("MARKET STRUCTURE DESK\nExecution Map");
+    brandText->setObjectName("brandText");
+    brandLayout->addWidget(badge);
+    brandLayout->addWidget(brandText);
+    headerLayout->addWidget(brandBox);
 
     symbol_ = new QLineEdit("JP225");
+    symbol_->setObjectName("symbolInput");
     interval_ = new QComboBox;
+    interval_->setObjectName("intervalInput");
     interval_->addItems({"1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d"});
     settings_ = new QPushButton("策略设置");
     backend_ = new QPushButton("后端");
     theme_ = new QPushButton("☾");
     refresh_ = new QPushButton("刷新");
+    refresh_->setObjectName("refreshButton");
     status_ = new QLabel("连接中");
     status_->setObjectName("status");
     symbol_->setFixedWidth(150);
@@ -627,21 +772,101 @@ private:
 
   QString darkCss() const {
     return R"(
-      QWidget { background: #080c0b; color: #f4efe3; font-family: "SF Pro Text", "Segoe UI", "PingFang SC"; font-size: 12px; }
-      QFrame#header, QFrame#footer { background: rgba(14, 19, 17, 220); border: 1px solid rgba(230, 226, 211, 32); border-radius: 3px; }
-      QLineEdit, QComboBox, QPushButton { height: 30px; background: rgba(31, 39, 35, 190); border: 1px solid rgba(230, 226, 211, 62); border-radius: 2px; padding: 0 8px; }
-      QPushButton:hover { border-color: #f0b64f; }
-      QLabel#status { color: #a7b0a8; }
+      QWidget { background: #080c0b; color: #f4efe3; font-family: "Roboto Flex", "SF Pro Text", "Segoe UI", "PingFang SC"; font-size: 12px; }
+      QMainWindow { background: #080c0b; }
+      QFrame#header, QFrame#footer {
+        background: #0e1311;
+        border: 1px solid rgba(230, 226, 211, 34);
+        border-radius: 3px;
+      }
+      QWidget#brandBox { background: transparent; }
+      QLabel#brandBadge {
+        min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px;
+        border: 1px solid rgba(240, 182, 79, 150);
+        border-radius: 2px;
+        background: #22251a;
+        color: #f0b64f;
+        font-size: 10px;
+        font-weight: 900;
+        qproperty-alignment: AlignCenter;
+      }
+      QLabel#brandText {
+        background: transparent;
+        color: #f4efe3;
+        font-size: 17px;
+        font-weight: 850;
+      }
+      QLineEdit, QComboBox, QPushButton {
+        min-height: 30px; max-height: 30px;
+        background: #1f2723;
+        border: 1px solid rgba(230, 226, 211, 64);
+        border-radius: 2px;
+        padding: 0 8px;
+        font-weight: 750;
+      }
+      QLineEdit#symbolInput { font-size: 13px; font-weight: 850; }
+      QPushButton#refreshButton { background: #f0b64f; border-color: #f0b64f; color: #111813; }
+      QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #f0b64f; }
+      QLabel#status {
+        background: transparent;
+        color: #a7b0a8;
+        font-weight: 800;
+        qproperty-alignment: AlignCenter;
+      }
+      QDialog {
+        background: #0e1311;
+        border: 1px solid rgba(230, 226, 211, 34);
+      }
     )";
   }
 
   QString lightCss() const {
     return R"(
-      QWidget { background: #eef0eb; color: #131916; font-family: "SF Pro Text", "Segoe UI", "PingFang SC"; font-size: 12px; }
-      QFrame#header, QFrame#footer { background: rgba(255, 253, 247, 235); border: 1px solid rgba(23, 31, 27, 32); border-radius: 3px; }
-      QLineEdit, QComboBox, QPushButton { height: 30px; background: rgba(238, 241, 234, 210); border: 1px solid rgba(23, 31, 27, 62); border-radius: 2px; padding: 0 8px; }
-      QPushButton:hover { border-color: #f0b64f; }
-      QLabel#status { color: #59635d; }
+      QWidget { background: #eef0eb; color: #131916; font-family: "Roboto Flex", "SF Pro Text", "Segoe UI", "PingFang SC"; font-size: 12px; }
+      QMainWindow { background: #eef0eb; }
+      QFrame#header, QFrame#footer {
+        background: #fffdf7;
+        border: 1px solid rgba(23, 31, 27, 34);
+        border-radius: 3px;
+      }
+      QWidget#brandBox { background: transparent; }
+      QLabel#brandBadge {
+        min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px;
+        border: 1px solid rgba(184, 125, 24, 170);
+        border-radius: 2px;
+        background: #f4ecd9;
+        color: #b27a17;
+        font-size: 10px;
+        font-weight: 900;
+        qproperty-alignment: AlignCenter;
+      }
+      QLabel#brandText {
+        background: transparent;
+        color: #131916;
+        font-size: 17px;
+        font-weight: 850;
+      }
+      QLineEdit, QComboBox, QPushButton {
+        min-height: 30px; max-height: 30px;
+        background: #eef1ea;
+        border: 1px solid rgba(23, 31, 27, 62);
+        border-radius: 2px;
+        padding: 0 8px;
+        font-weight: 750;
+      }
+      QLineEdit#symbolInput { font-size: 13px; font-weight: 850; }
+      QPushButton#refreshButton { background: #f0b64f; border-color: #d79b2f; color: #111813; }
+      QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #b27a17; }
+      QLabel#status {
+        background: transparent;
+        color: #59635d;
+        font-weight: 800;
+        qproperty-alignment: AlignCenter;
+      }
+      QDialog {
+        background: #fffdf7;
+        border: 1px solid rgba(23, 31, 27, 34);
+      }
     )";
   }
 

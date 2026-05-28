@@ -37,7 +37,7 @@ You can also use the GitHub Actions workflow:
 .github/workflows/windows-cpp-kline-viewer.yml
 ```
 
-This workflow is stored inside this `cpp-kline-viewer` directory so the directory can be published as a standalone GitHub repository. Run it manually from GitHub Actions, then download the `q4j-kline-viewer-windows` artifact.
+This workflow is stored inside this `cpp-kline-viewer` directory so the directory can be published as a standalone GitHub repository. Run it manually from GitHub Actions, then download the `q4j-kline-viewer-windows` artifact. The artifact zip contains `q4j_kline_viewer.exe` and the deployed Qt runtime files directly; it does not contain a second nested zip.
 
 ## Backend configuration
 
@@ -67,8 +67,10 @@ export Q4J_WS_BASE=ws://127.0.0.1:8080
 - Compact command header
 - Strategy settings dialog for high/low intervals
 - TradingView-style transparent layer list in the chart
+- Price axis and time axis
+- Visible layer drawings and labels for Range, N, N-IN, iFVG, Order, and Marker
 - Fixed-shape OHLC sketch that follows hovered candle data
 
 ## Notes
 
-This is a native rewrite, not a wrapper around the existing web page. Strategy overlay drawing is prepared through layer toggles, but the first version focuses on candle rendering and live data plumbing.
+This is a native rewrite, not a wrapper around the existing web page. The current native overlay drawings are visual layer renderings based on the visible candle range; wiring the full strategy overlay event API can be added next.
