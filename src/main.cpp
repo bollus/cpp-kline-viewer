@@ -110,6 +110,17 @@ public:
     update();
   }
 
+  void showLoadError(const QString &message) {
+    candles_.clear();
+    overlayEvents_ = {};
+    parsedOverlayEvents_.clear();
+    hoveredIndex_ = -1;
+    hoveredPositionIndex_ = -1;
+    messageText_ = message;
+    emit visibleRangeChanged(0, 0, -1, -1);
+    update();
+  }
+
   void upsertCandle(const Candle &candle) {
     const auto it = std::lower_bound(candles_.begin(), candles_.end(), candle.ms, [](const Candle &item, qint64 ms) {
       return item.ms < ms;
@@ -1298,22 +1309,20 @@ public:
       reply->deleteLater();
       if (reply->error() != QNetworkReply::NoError) {
         emit statusChanged("加载失败", false);
-        emit errorMessage(replyErrorMessage(reply, body));
+        emit loadFailed(replyErrorMessage(reply, body));
         return;
       }
       const QJsonDocument doc = QJsonDocument::fromJson(body);
       if (doc.isObject()) {
         const QString message = doc.object().value("message").toString();
         emit statusChanged("加载失败", false);
-        emit candlesLoaded({});
-        emit overlayEventsLoaded({});
-        emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
+        emit loadFailed(message.isEmpty() ? "响应格式错误" : message);
         socket_.close();
         return;
       }
       if (!doc.isArray()) {
         emit statusChanged("加载失败", false);
-        emit errorMessage("响应格式错误");
+        emit loadFailed("响应格式错误");
         return;
       }
       QVector<Candle> candles;
@@ -1387,6 +1396,7 @@ signals:
   void candleUpdated(const Candle &candle);
   void statusChanged(const QString &status, bool live);
   void errorMessage(const QString &message);
+  void loadFailed(const QString &message);
 
 private:
   static Candle parseCandle(const QJsonObject &obj) {
@@ -1734,7 +1744,7 @@ private:
     auto *titleText = new QLabel("Execution Map");
     titleText->setObjectName("titleText");
     minimize_ = new QPushButton("−");
-    maximize_ = new QPushButton("□");
+    maximize_ = new QPushButton("▢");
     close_ = new QPushButton("×");
     minimize_->setObjectName("windowButton");
     maximize_->setObjectName("windowButton");
@@ -1776,7 +1786,7 @@ private:
     status_ = new QLabel("连接中");
     status_->setObjectName("status");
     symbol_->setFixedWidth(132);
-    interval_->setFixedWidth(62);
+    interval_->setFixedWidth(70);
     settings_->setFixedWidth(73);
     backend_->setFixedWidth(85);
     theme_->setFixedWidth(34);
@@ -1916,6 +1926,12 @@ private:
     connect(&client_, &CandleClient::errorMessage, this, [this](const QString &message) {
       if (message.trimmed().isEmpty()) chart_->clearMessage();
       else chart_->showMessage(message.trimmed());
+    });
+    connect(&client_, &CandleClient::loadFailed, this, [this](const QString &message) {
+      chart_->showLoadError(message.trimmed().isEmpty() ? "加载失败" : message.trimmed());
+      events_->setText("Events --");
+      range_->setText("Visible Range --");
+      ohlc_->setText("O -- H -- L -- C --");
     });
     connect(chart_, &ChartWidget::olderCandlesRequested, &client_, &CandleClient::loadOlder);
     connect(chart_, &ChartWidget::overlayRangeChanged, &client_, &CandleClient::loadOverlayRange);
@@ -2289,6 +2305,7 @@ private:
     events_->setText("Events --");
     range_->setText("Visible Range --");
     chart_->clearMessage();
+    chart_->setCandles({});
     chart_->setOverlayEvents({});
     client_.load(symbol_->text(), interval_->currentText(), higher_->currentText(), lower_->currentText());
   }
