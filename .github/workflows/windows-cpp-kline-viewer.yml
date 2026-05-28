@@ -9,6 +9,9 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+      VCPKG_FEATURE_FLAGS: "binarycaching"
 
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +21,7 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}/vcpkg_installed
+            ${{ github.workspace }}/build/vcpkg_installed
             ${{ env.LOCALAPPDATA }}\vcpkg\archives
           key: windows-static-qt-${{ hashFiles('CMakeLists.txt') }}
 
@@ -25,7 +29,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          vcpkg install qtbase:x64-windows-static qtwebsockets:x64-windows-static
+          vcpkg install `
+            qtbase:x64-windows-static-release `
+            qtwebsockets:x64-windows-static-release `
+            --overlay-triplets=triplets `
+            --clean-after-build
 
       - name: Configure
         shell: pwsh
@@ -35,7 +43,8 @@ jobs:
             -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+            -DVCPKG_OVERLAY_TRIPLETS="triplets" `
             -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>"
 
       - name: Build

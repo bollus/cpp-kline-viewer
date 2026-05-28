@@ -57,6 +57,15 @@ export Q4J_BACKEND_URL=http://127.0.0.1:8080
 export Q4J_WS_BASE=ws://127.0.0.1:8080
 ```
 
+## Backend API
+
+If you want to implement your own backend for this viewer, see:
+
+```text
+API.md
+API.zh-CN.md
+```
+
 ## Implemented
 
 - Native candlestick rendering with Qt `QPainter`
