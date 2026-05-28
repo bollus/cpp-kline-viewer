@@ -152,6 +152,7 @@ public:
   }
 
   void upsertCandle(const Candle &candle) {
+    const bool followLatest = isAtRealtimeEdge();
     const auto it = std::lower_bound(candles_.begin(), candles_.end(), candle.ms, [](const Candle &item, qint64 ms) {
       return item.ms < ms;
     });
@@ -160,8 +161,9 @@ public:
     } else {
       candles_.insert(it, candle);
     }
+    if (followLatest) visibleStart_ = maxVisibleStart();
     emitVisibleRange();
-    update();
+    scheduleRepaint();
   }
 
   void setLayersVisible(bool range, bool n, bool nin, bool ifvg, bool order, bool marker) {
@@ -352,6 +354,10 @@ private:
 
   double maxVisibleStart() const {
     return std::max(0.0, double(candleCount() - visibleCount_ + rightOffsetBars_));
+  }
+
+  bool isAtRealtimeEdge() const {
+    return maxVisibleStart() - visibleStart_ <= std::max(2.0, rightOffsetBars_ * 0.25);
   }
 
   QColor bg() const { return dark_ ? QColor("#0b100f") : QColor("#fffefa"); }
@@ -1293,10 +1299,31 @@ public:
   explicit CandleClient(QObject *parent = nullptr) : QObject(parent) {
     backendBase_ = normalizeBase(envOrDefault("Q4J_BACKEND_URL", "http://127.0.0.1:8080"));
     wsBase_ = normalizeBase(envOrDefault("Q4J_WS_BASE", wsFromHttp(backendBase_)));
-    connect(&socket_, &QWebSocket::connected, this, [this] { emit statusChanged("实时", true); });
-    connect(&socket_, &QWebSocket::disconnected, this, [this] { emit statusChanged("断开", false); });
+    liveWatchdog_.setInterval(30000);
+    connect(&liveWatchdog_, &QTimer::timeout, this, [this] {
+      if (!realtimeEnabled_ || socket_.state() != QAbstractSocket::ConnectedState) return;
+      if (lastRealtimeMessageMs_ <= 0 || QDateTime::currentMSecsSinceEpoch() - lastRealtimeMessageMs_ > realtimeTimeoutMs()) {
+        emitDebugLog("WS watchdog: connected but no recent valid candle");
+        emit statusChanged("实时无数据", false);
+      }
+    });
+    connect(&socket_, &QWebSocket::connected, this, [this] {
+      lastRealtimeMessageMs_ = 0;
+      emitDebugLog("WS connected");
+      emit statusChanged("等待实时", false);
+      liveWatchdog_.start();
+    });
+    connect(&socket_, &QWebSocket::disconnected, this, [this] {
+      liveWatchdog_.stop();
+      lastRealtimeMessageMs_ = 0;
+      emitDebugLog(QString("WS disconnected, closeCode=%1, reason=%2")
+        .arg(static_cast<int>(socket_.closeCode()))
+        .arg(socket_.closeReason()));
+      emit statusChanged("断开", false);
+    });
     connect(&socket_, &QWebSocket::textMessageReceived, this, &CandleClient::onSocketMessage);
     connect(&socket_, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error), this, [this] {
+      emitDebugLog(QString("WS error: %1").arg(socket_.errorString()));
       emit statusChanged("断开", false);
     });
   }
@@ -1309,8 +1336,11 @@ public:
     backendBase_ = normalizeBase(backendBase.trimmed());
     wsBase_ = normalizeBase(wsBase.trimmed().isEmpty() ? wsFromHttp(backendBase_) : wsBase.trimmed());
     realtimeEnabled_ = realtimeEnabled;
+    emitDebugLog(QString("Backend configured: http=%1, ws=%2, realtime=%3")
+      .arg(backendBase_, wsBase_, realtimeEnabled_ ? "true" : "false"));
     if (!realtimeEnabled_) {
       socket_.close();
+      liveWatchdog_.stop();
       emit statusChanged("实时关闭", false);
     } else {
       socket_.close();
@@ -1319,9 +1349,9 @@ public:
 
   void load(const QString &symbol, const QString &interval, const QString &higherInterval, const QString &lowerInterval) {
     symbol_ = symbol.trimmed();
-    interval_ = interval.trimmed();
-    higherInterval_ = higherInterval.trimmed();
-    lowerInterval_ = lowerInterval.trimmed();
+    interval_ = interval.trimmed().toLower();
+    higherInterval_ = higherInterval.trimmed().toLower();
+    lowerInterval_ = lowerInterval.trimmed().toLower();
     knownStartMs_ = 0;
     knownEndMs_ = 0;
     overlayLoadedStartMs_ = 0;
@@ -1368,7 +1398,8 @@ public:
       QVector<Candle> candles;
       for (const QJsonValue &value : doc.array()) {
         const QJsonObject obj = value.toObject();
-        candles.push_back(parseCandle(obj));
+        const Candle candle = parseCandle(obj);
+        if (isValidCandle(candle)) candles.push_back(candle);
       }
       updateKnownRange(candles);
       emit errorMessage({});
@@ -1414,7 +1445,10 @@ public:
         return;
       }
       QVector<Candle> candles;
-      for (const QJsonValue &value : doc.array()) candles.push_back(parseCandle(value.toObject()));
+      for (const QJsonValue &value : doc.array()) {
+        const Candle candle = parseCandle(value.toObject());
+        if (isValidCandle(candle)) candles.push_back(candle);
+      }
       if (candles.isEmpty()) return;
       updateKnownRange(candles);
       emit olderCandlesLoaded(candles);
@@ -1437,6 +1471,7 @@ signals:
   void statusChanged(const QString &status, bool live);
   void errorMessage(const QString &message);
   void loadFailed(const QString &message);
+  void debugLog(const QString &message);
 
 private:
   static Candle parseCandle(const QJsonObject &obj) {
@@ -1449,18 +1484,32 @@ private:
     };
   }
 
+  static bool isValidCandle(const Candle &candle) {
+    return candle.ms > 0
+      && std::isfinite(candle.open)
+      && std::isfinite(candle.high)
+      && std::isfinite(candle.low)
+      && std::isfinite(candle.close);
+  }
+
   void connectSocket() {
     if (!realtimeEnabled_) {
       socket_.close();
+      liveWatchdog_.stop();
       emit statusChanged("实时关闭", false);
       return;
     }
     socket_.close();
+    liveWatchdog_.stop();
+    lastRealtimeMessageMs_ = 0;
+    liveWatchdog_.setInterval(static_cast<int>(std::clamp<qint64>(realtimeTimeoutMs() / 3, 10000, 60000)));
+    emit statusChanged("连接实时", false);
     QUrl url(wsBase_ + "/ws/candles");
     QUrlQuery query;
     query.addQueryItem("symbol", symbol_);
     query.addQueryItem("interval", interval_);
     url.setQuery(query);
+    emitDebugLog(QString("WS opening: %1").arg(url.toString()));
     socket_.open(url);
   }
 
@@ -1520,6 +1569,11 @@ private:
     return reply->errorString();
   }
 
+  qint64 realtimeTimeoutMs() const {
+    const qint64 candleMs = intervalMs(interval_.toLower());
+    return std::clamp<qint64>(candleMs * 5 / 2, 30000, 10 * 60000);
+  }
+
   void updateKnownRange(const QVector<Candle> &candles) {
     if (candles.isEmpty()) return;
     qint64 start = candles.first().ms;
@@ -1547,9 +1601,40 @@ private:
   }
 
   void onSocketMessage(const QString &message) {
+    emitDebugLog(QString("WS raw: %1").arg(message.left(1000)));
     const QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
-    if (!doc.isObject()) return;
-    emit candleUpdated(parseCandle(doc.object()));
+    if (!doc.isObject()) {
+      emitDebugLog("WS ignored: JSON root is not an object");
+      return;
+    }
+    QJsonObject obj = doc.object();
+    if (obj.contains("data") && obj.value("data").isObject()) obj = obj.value("data").toObject();
+    if (obj.contains("candle") && obj.value("candle").isObject()) obj = obj.value("candle").toObject();
+    const Candle candle = parseCandle(obj);
+    if (!isValidCandle(candle)) {
+      emitDebugLog(QString("WS invalid candle: timestamp=%1 open=%2 high=%3 low=%4 close=%5")
+        .arg(candle.ms)
+        .arg(candle.open)
+        .arg(candle.high)
+        .arg(candle.low)
+        .arg(candle.close));
+      emit statusChanged("实时格式错误", false);
+      return;
+    }
+    lastRealtimeMessageMs_ = QDateTime::currentMSecsSinceEpoch();
+    emitDebugLog(QString("WS parsed candle: %1 O=%2 H=%3 L=%4 C=%5")
+      .arg(QDateTime::fromMSecsSinceEpoch(candle.ms).toString("yyyy-MM-dd HH:mm:ss.zzz"))
+      .arg(candle.open)
+      .arg(candle.high)
+      .arg(candle.low)
+      .arg(candle.close));
+    emit statusChanged("实时", true);
+    emitDebugLog("WS emit candleUpdated");
+    emit candleUpdated(candle);
+  }
+
+  void emitDebugLog(const QString &message) {
+    emit debugLog(QDateTime::currentDateTime().toString("HH:mm:ss.zzz  ") + message);
   }
 
   QString backendBase_;
@@ -1560,8 +1645,10 @@ private:
   QString lowerInterval_;
   QNetworkAccessManager network_;
   QWebSocket socket_;
+  QTimer liveWatchdog_;
   bool loadingOlder_ = false;
   bool realtimeEnabled_ = true;
+  qint64 lastRealtimeMessageMs_ = 0;
   qint64 knownStartMs_ = 0;
   qint64 knownEndMs_ = 0;
   qint64 overlayLoadedStartMs_ = 0;
@@ -1842,6 +1929,8 @@ private:
     settings_->setObjectName("toolButton");
     backend_ = new QPushButton("服务端设置");
     backend_->setObjectName("toolButton");
+    wsLogButton_ = new QPushButton("WS日志");
+    wsLogButton_->setObjectName("toolButton");
     theme_ = new QPushButton("☾");
     theme_->setObjectName("iconButton");
     refresh_ = new QPushButton("刷新");
@@ -1852,6 +1941,7 @@ private:
     interval_->setFixedWidth(73);
     settings_->setFixedWidth(75);
     backend_->setFixedWidth(88);
+    wsLogButton_->setFixedWidth(68);
     theme_->setFixedWidth(34);
     refresh_->setFixedWidth(56);
     status_->setFixedWidth(120);
@@ -1859,6 +1949,7 @@ private:
     headerLayout->addWidget(interval_);
     headerLayout->addWidget(settings_);
     headerLayout->addWidget(backend_);
+    headerLayout->addWidget(wsLogButton_);
     headerLayout->addStretch(1);
     headerLayout->addWidget(theme_);
     headerLayout->addWidget(refresh_);
@@ -1887,6 +1978,26 @@ private:
 
     buildSettingsDialog();
     buildBackendDialog();
+    buildDebugDialog();
+  }
+
+  void buildDebugDialog() {
+    debugDialog_ = new QDialog(this);
+    debugDialog_->setWindowTitle("WS 调试日志");
+    debugDialog_->setMinimumSize(760, 460);
+    auto *layout = new QVBoxLayout(debugDialog_);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
+    debugLog_ = new QPlainTextEdit;
+    debugLog_->setObjectName("debugLog");
+    debugLog_->setReadOnly(true);
+    debugLog_->setMaximumBlockCount(1200);
+    layout->addWidget(debugLog_, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    auto *clear = buttons->addButton("清空", QDialogButtonBox::ResetRole);
+    layout->addWidget(buttons);
+    connect(clear, &QPushButton::clicked, debugLog_, &QPlainTextEdit::clear);
+    connect(buttons, &QDialogButtonBox::rejected, debugDialog_, &QDialog::hide);
   }
 
   void buildSettingsDialog() {
@@ -1974,6 +2085,11 @@ private:
     connect(backend_, &QPushButton::clicked, this, [this] {
       showBackendDialog(false);
     });
+    connect(wsLogButton_, &QPushButton::clicked, this, [this] {
+      if (debugDialog_) debugDialog_->show();
+      if (debugDialog_) debugDialog_->raise();
+      if (debugDialog_) debugDialog_->activateWindow();
+    });
     connect(theme_, &QPushButton::clicked, this, [this] {
       dark_ = !dark_;
       applyTheme();
@@ -1985,7 +2101,16 @@ private:
     connect(&client_, &CandleClient::overlayEventsLoaded, this, [this](const QJsonArray &events) {
       events_->setText(QString("Events %1").arg(events.size()));
     });
-    connect(&client_, &CandleClient::candleUpdated, chart_, &ChartWidget::upsertCandle);
+    connect(&client_, &CandleClient::candleUpdated, this, [this](const Candle &candle) {
+      appendDebugLog(QString("Chart upsert candle: %1 O=%2 H=%3 L=%4 C=%5")
+        .arg(QDateTime::fromMSecsSinceEpoch(candle.ms).toString("yyyy-MM-dd HH:mm:ss.zzz"))
+        .arg(candle.open)
+        .arg(candle.high)
+        .arg(candle.low)
+        .arg(candle.close));
+      chart_->upsertCandle(candle);
+    });
+    connect(&client_, &CandleClient::debugLog, this, &MainWindow::appendDebugLog);
     connect(&client_, &CandleClient::errorMessage, this, [this](const QString &message) {
       if (message.trimmed().isEmpty()) chart_->clearMessage();
       else chart_->showMessage(message.trimmed());
@@ -2388,6 +2513,14 @@ private:
     )";
   }
 
+  void appendDebugLog(const QString &message) {
+    if (!debugLog_) return;
+    QScrollBar *bar = debugLog_->verticalScrollBar();
+    const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
+    debugLog_->appendPlainText(message);
+    if (wasAtBottom && bar) bar->setValue(bar->maximum());
+  }
+
   void refresh() {
     events_->setText("Events --");
     range_->setText("Visible Range --");
@@ -2407,6 +2540,7 @@ private:
   QComboBox *lower_ = nullptr;
   QPushButton *settings_ = nullptr;
   QPushButton *backend_ = nullptr;
+  QPushButton *wsLogButton_ = nullptr;
   QPushButton *theme_ = nullptr;
   QPushButton *refresh_ = nullptr;
   QPushButton *minimize_ = nullptr;
@@ -2418,6 +2552,8 @@ private:
   QLabel *events_ = nullptr;
   QDialog *settingsDialog_ = nullptr;
   QDialog *backendDialog_ = nullptr;
+  QDialog *debugDialog_ = nullptr;
+  QPlainTextEdit *debugLog_ = nullptr;
   QLineEdit *backendUrl_ = nullptr;
   QLineEdit *wsUrl_ = nullptr;
   QCheckBox *realtime_ = nullptr;
