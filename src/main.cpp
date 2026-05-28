@@ -74,13 +74,11 @@ public:
     const auto it = std::lower_bound(candles_.begin(), candles_.end(), candle.ms, [](const Candle &item, qint64 ms) {
       return item.ms < ms;
     });
-    const bool wasAtEnd = visibleStart_ + visibleCount_ >= candleCount() - 2;
     if (it != candles_.end() && it->ms == candle.ms) {
       *it = candle;
     } else {
       candles_.insert(it, candle);
     }
-    if (wasAtEnd) visibleStart_ = maxVisibleStart();
     update();
   }
 
@@ -107,6 +105,7 @@ protected:
     paintGrid(p, minPrice, maxPrice);
     paintCandles(p);
     paintOverlays(p, minPrice, maxPrice);
+    paintLatestPriceLine(p, minPrice, maxPrice);
     paintLayerHints(p);
     paintCrosshair(p);
     paintOhlcSketch(p);
@@ -315,8 +314,8 @@ private:
         drawNEvent(p, payload.value("signal_n").toObject(), QColor(39, 212, 177, 220), "N-IN", minPrice, maxPrice);
       }
       if (ifvgVisible_ && (type == "ENTRY_SIGNAL_OPEN_SENT" || type == "POSITION_OPEN_FILLED")) drawIfvgEvent(p, payload, minPrice, maxPrice);
-      if (orderVisible_ && type == "POSITION_OPEN_FILLED") drawPositionEvent(p, payload, event, minPrice, maxPrice);
     }
+    if (orderVisible_) drawPositions(p, minPrice, maxPrice);
   }
 
   QJsonObject parsePayload(const QJsonObject &event) const {
@@ -430,17 +429,20 @@ private:
 
   void drawIfvgEvent(QPainter &p, const QJsonObject &payload, double minPrice, double maxPrice) {
     const QJsonObject signal = payload.value("entry_signal").toObject();
+    if (signal.value("type").toString() != "IFVG") return;
     const QJsonObject fvg = signal.value("fvg").toObject();
     if (fvg.isEmpty()) return;
     const double top = fvg.value("top").toDouble(std::numeric_limits<double>::quiet_NaN());
     const double bottom = fvg.value("bottom").toDouble(std::numeric_limits<double>::quiet_NaN());
-    const qint64 start = jsonMs(fvg.value("k1_time").isUndefined() ? fvg.value("create_time") : fvg.value("k1_time"));
+    const QJsonObject k1 = fvg.value("k1").toObject();
+    qint64 start = jsonMs(k1.value("open_time"));
+    if (start <= 0) start = jsonMs(fvg.value("k1_time").isUndefined() ? fvg.value("create_time") : fvg.value("k1_time"));
     const qint64 end = jsonMs(fvg.value("ifvg_time").isUndefined() ? signal.value("time") : fvg.value("ifvg_time"));
     if (!std::isfinite(top) || !std::isfinite(bottom) || start <= 0 || end <= 0) return;
     QRectF box(pointAtTime(start, top, minPrice, maxPrice), pointAtTime(end, bottom, minPrice, maxPrice));
     box = box.normalized();
-    p.fillRect(box, QColor(114, 217, 247, 58));
-    p.setPen(QPen(QColor(39, 212, 177, 190), 1));
+    p.fillRect(box, QColor(110, 215, 246, 87));
+    p.setPen(QPen(QColor(46, 211, 183, 224), 1));
     p.drawRect(box);
     p.drawText(box.topLeft() + QPointF(4, -4), "iFVG");
   }
@@ -472,6 +474,166 @@ private:
       p.setPen(Qt::NoPen);
       p.drawPolygon(arrow);
     }
+  }
+
+  struct PositionPartial {
+    qint64 time = 0;
+    double exitPrice = std::numeric_limits<double>::quiet_NaN();
+    double pnl = std::numeric_limits<double>::quiet_NaN();
+  };
+
+  struct PositionShape {
+    QString key;
+    QString direction;
+    qint64 entryTime = 0;
+    double entry = std::numeric_limits<double>::quiet_NaN();
+    double sl = std::numeric_limits<double>::quiet_NaN();
+    double tp1 = std::numeric_limits<double>::quiet_NaN();
+    double quantity = std::numeric_limits<double>::quiet_NaN();
+    QVector<PositionPartial> partials;
+    bool closed = false;
+    qint64 closeTime = 0;
+    double exitPrice = std::numeric_limits<double>::quiet_NaN();
+    double totalPnl = std::numeric_limits<double>::quiet_NaN();
+  };
+
+  QString positionKey(const QJsonObject &payload, qint64 entryTime) const {
+    const qint64 positionId = static_cast<qint64>(payload.value("position_id").toDouble(0));
+    return positionId > 0 ? QString("p:%1").arg(positionId) : QString("t:%1").arg(entryTime);
+  }
+
+  void drawPositions(QPainter &p, double minPrice, double maxPrice) {
+    QHash<QString, PositionShape> positions;
+    for (const QJsonValue &value : overlayEvents_) {
+      const QJsonObject event = value.toObject();
+      const QString type = event.value("eventType").toString();
+      const QJsonObject payload = parsePayload(event);
+      if (type == "POSITION_OPEN_FILLED") {
+        const qint64 entryTime = jsonMs(payload.value("entry_time").isUndefined() ? event.value("eventTime") : payload.value("entry_time"));
+        const QString key = positionKey(payload, entryTime);
+        PositionShape position = positions.value(key);
+        position.key = key;
+        position.direction = event.value("direction").toString();
+        position.entryTime = entryTime;
+        position.entry = payload.value("exec_price").toDouble(payload.value("entry").toDouble(event.value("price").toDouble(std::numeric_limits<double>::quiet_NaN())));
+        position.sl = payload.value("sl").toDouble(std::numeric_limits<double>::quiet_NaN());
+        position.tp1 = payload.value("tp1").toDouble(std::numeric_limits<double>::quiet_NaN());
+        position.quantity = payload.value("quantity").toDouble(std::numeric_limits<double>::quiet_NaN());
+        positions.insert(key, position);
+      } else if (type == "POSITION_PARTIAL_CLOSED" || type == "POSITION_CLOSED") {
+        const qint64 entryTime = jsonMs(payload.value("entry_time"));
+        if (entryTime <= 0) continue;
+        const QString key = positionKey(payload, entryTime);
+        PositionShape position = positions.value(key);
+        position.key = key;
+        position.direction = event.value("direction").toString(position.direction);
+        position.entryTime = entryTime;
+        if (!std::isfinite(position.entry)) position.entry = payload.value("entry").toDouble(std::numeric_limits<double>::quiet_NaN());
+        if (type == "POSITION_PARTIAL_CLOSED") {
+          PositionPartial partial;
+          partial.time = jsonMs(payload.value("exit_time").isUndefined() ? event.value("eventTime") : payload.value("exit_time"));
+          partial.exitPrice = payload.value("exit_price").toDouble(event.value("price").toDouble(std::numeric_limits<double>::quiet_NaN()));
+          partial.pnl = payload.value("close_pnl").toDouble(std::numeric_limits<double>::quiet_NaN());
+          position.partials.push_back(partial);
+        } else {
+          position.closed = true;
+          position.closeTime = jsonMs(payload.value("exit_time").isUndefined() ? event.value("eventTime") : payload.value("exit_time"));
+          position.exitPrice = payload.value("exit_price").toDouble(event.value("price").toDouble(std::numeric_limits<double>::quiet_NaN()));
+          position.totalPnl = payload.value("total_pnl").toDouble(payload.value("close_pnl").toDouble(std::numeric_limits<double>::quiet_NaN()));
+        }
+        positions.insert(key, position);
+      }
+    }
+
+    for (const PositionShape &position : std::as_const(positions)) {
+      drawPositionShape(p, position, minPrice, maxPrice);
+    }
+  }
+
+  void drawPositionShape(QPainter &p, const PositionShape &position, double minPrice, double maxPrice) {
+    if (!std::isfinite(position.entry) || position.entryTime <= 0) return;
+    const bool isLong = position.direction == "LONG";
+    qint64 end = position.closed && position.closeTime > 0 ? position.closeTime : ((candles_.isEmpty() ? position.entryTime : candles_.last().ms) + 5 * barIntervalMs());
+    const double entry = position.entry;
+    const double sl = position.sl;
+    double firstPartialExit = std::numeric_limits<double>::quiet_NaN();
+    if (!position.partials.isEmpty()) firstPartialExit = position.partials.first().exitPrice;
+    const double tp2 = std::isfinite(position.exitPrice) && (isLong ? position.exitPrice > entry : position.exitPrice < entry) ? position.exitPrice : std::numeric_limits<double>::quiet_NaN();
+    const double profitBoundary = std::isfinite(tp2) ? tp2 : firstPartialExit;
+
+    if (std::isfinite(sl) && (isLong ? sl < entry : sl > entry)) {
+      drawPositionArea(p, position.entryTime, end, entry, sl, false, minPrice, maxPrice);
+      drawLineAt(p, position.entryTime, end, sl, QColor(239, 95, 120, 225), Qt::SolidLine, minPrice, maxPrice);
+    }
+    if (std::isfinite(profitBoundary) && (isLong ? profitBoundary > entry : profitBoundary < entry)) {
+      drawPositionArea(p, position.entryTime, end, entry, profitBoundary, true, minPrice, maxPrice);
+    }
+    if (std::isfinite(firstPartialExit)) {
+      drawLineAt(p, position.entryTime, end, firstPartialExit, QColor(32, 201, 151, 210), Qt::DashLine, minPrice, maxPrice);
+    }
+    if (std::isfinite(tp2) && (!std::isfinite(firstPartialExit) || std::abs(tp2 - firstPartialExit) > 1e-9)) {
+      drawLineAt(p, position.entryTime, end, tp2, QColor(32, 201, 151, 242), Qt::SolidLine, minPrice, maxPrice);
+    }
+    drawLineAt(p, position.entryTime, end, entry, dark_ ? QColor(244, 239, 232, 225) : QColor(55, 65, 81, 245), Qt::SolidLine, minPrice, maxPrice);
+
+    if (markerVisible_) {
+      drawMarker(p, position.entryTime, entry, isLong, isLong ? up() : down(), isLong ? "L" : "S", minPrice, maxPrice);
+      for (const PositionPartial &partial : position.partials) {
+        drawCircleMarker(p, partial.time, partial.exitPrice, QColor("#f0b64f"), "TP1", minPrice, maxPrice);
+      }
+      if (position.closed) {
+        const QColor color = std::isfinite(position.totalPnl) && position.totalPnl >= 0 ? up() : down();
+        drawMarker(p, position.closeTime, std::isfinite(position.exitPrice) ? position.exitPrice : entry, !isLong, color, "Exit", minPrice, maxPrice);
+      }
+    }
+  }
+
+  void drawLineAt(QPainter &p, qint64 start, qint64 end, double price, const QColor &color, Qt::PenStyle style, double minPrice, double maxPrice) {
+    if (!std::isfinite(price)) return;
+    p.setPen(QPen(color, 1, style));
+    p.drawLine(pointAtTime(start, price, minPrice, maxPrice), pointAtTime(end, price, minPrice, maxPrice));
+  }
+
+  void drawPositionArea(QPainter &p, qint64 start, qint64 end, double entry, double boundary, bool profitable, double minPrice, double maxPrice) {
+    const QColor fill = profitable ? QColor(32, 201, 151, 66) : QColor(239, 95, 120, 62);
+    QRectF area(pointAtTime(start, entry, minPrice, maxPrice), pointAtTime(end, boundary, minPrice, maxPrice));
+    p.fillRect(area.normalized(), fill);
+  }
+
+  void drawMarker(QPainter &p, qint64 time, double price, bool upArrow, const QColor &color, const QString &label, double minPrice, double maxPrice) {
+    const QPointF pos = pointAtTime(time, price, minPrice, maxPrice) + QPointF(0, upArrow ? 14 : -14);
+    QPolygonF arrow;
+    if (upArrow) {
+      arrow << QPointF(pos.x(), pos.y() - 9) << QPointF(pos.x() - 5, pos.y() + 1) << QPointF(pos.x() + 5, pos.y() + 1);
+    } else {
+      arrow << QPointF(pos.x(), pos.y() + 9) << QPointF(pos.x() - 5, pos.y() - 1) << QPointF(pos.x() + 5, pos.y() - 1);
+    }
+    p.setBrush(color);
+    p.setPen(Qt::NoPen);
+    p.drawPolygon(arrow);
+    p.setPen(color);
+    p.drawText(pos + QPointF(8, 4), label);
+  }
+
+  void drawCircleMarker(QPainter &p, qint64 time, double price, const QColor &color, const QString &label, double minPrice, double maxPrice) {
+    if (!std::isfinite(price)) return;
+    const QPointF pos = pointAtTime(time, price, minPrice, maxPrice);
+    p.setBrush(color);
+    p.setPen(Qt::NoPen);
+    p.drawEllipse(pos, 4, 4);
+    p.setPen(color);
+    p.drawText(pos + QPointF(8, 4), label);
+  }
+
+  void paintLatestPriceLine(QPainter &p, double minPrice, double maxPrice) {
+    if (candles_.isEmpty()) return;
+    const Candle &latest = candles_.last();
+    const QRectF r = plotRect();
+    const double y = yFor(latest.close, minPrice, maxPrice);
+    const QColor color = latest.close >= latest.open ? up() : down();
+    p.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 185), 1, Qt::DashLine));
+    p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+    drawAxisTag(p, QRectF(r.right() + 6, y - 9, 66, 18), QString::number(latest.close, 'f', 2), color);
   }
 
   qint64 positionEndMs(const QJsonObject &openPayload, qint64 entryTime) const {
@@ -539,8 +701,6 @@ private:
       const QString time = QDateTime::fromMSecsSinceEpoch(candles_[hoveredIndex_].ms).toString("MM-dd HH:mm");
       drawAxisTag(p, QRectF(x - 48, r.bottom() + 6, 96, 18), time, QColor("#f0b64f"));
     }
-    const double closeY = yFor(candles_[hoveredIndex_].close, minPrice, maxPrice);
-    drawAxisTag(p, QRectF(r.right() + 6, closeY - 9, 66, 18), QString::number(candles_[hoveredIndex_].close, 'f', 2), candles_[hoveredIndex_].close >= candles_[hoveredIndex_].open ? up() : down());
   }
 
   void drawAxisTag(QPainter &p, const QRectF &rect, const QString &text, const QColor &color) {
