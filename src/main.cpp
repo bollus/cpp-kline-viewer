@@ -113,6 +113,8 @@ protected:
   }
 
   void mouseMoveEvent(QMouseEvent *event) override {
+    mousePos_ = event->position();
+    hasMouse_ = true;
     if (dragging_) {
       const int dx = event->position().x() - dragStart_.x();
       const int deltaBars = static_cast<int>(std::round(-dx / std::max(1.0, barStep())));
@@ -131,6 +133,7 @@ protected:
 
   void leaveEvent(QEvent *) override {
     hoveredIndex_ = -1;
+    hasMouse_ = false;
     emit hoveredCandleChanged(nullptr);
     update();
   }
@@ -187,7 +190,7 @@ private:
   }
 
   int maxVisibleStart() const {
-    return std::max(0, candleCount() - visibleCount_);
+    return std::max(0, candleCount() - visibleCount_ + rightOffsetBars_);
   }
 
   QColor bg() const { return dark_ ? QColor("#0b100f") : QColor("#fffefa"); }
@@ -217,6 +220,11 @@ private:
   double yFor(double price, double minPrice, double maxPrice) const {
     const QRectF r = plotRect();
     return r.bottom() - ((price - minPrice) / (maxPrice - minPrice)) * r.height();
+  }
+
+  double priceForY(double y, double minPrice, double maxPrice) const {
+    const QRectF r = plotRect();
+    return maxPrice - ((y - r.top()) / r.height()) * (maxPrice - minPrice);
   }
 
   void paintBackground(QPainter &p) {
@@ -300,6 +308,7 @@ private:
       const QString type = event.value("eventType").toString();
       const QJsonObject payload = parsePayload(event);
       if (rangeVisible_ && type == "RANGE_BOUNDARY_UPDATED") drawRangeEvent(p, payload, minPrice, maxPrice);
+      if (rangeVisible_ && type == "RANGE_BOUNDARY_TOUCHED") drawRangeTouchEvent(p, payload, event, minPrice, maxPrice);
       if (nVisible_ && type == "HIGH_N_DETECTED") drawNEvent(p, payload.value("n").toObject(), QColor(240, 182, 79, 220), "N", minPrice, maxPrice);
       if (ninVisible_ && type == "HIGH_N_IN_DETECTED") {
         drawNEvent(p, payload.value("base_n").toObject(), QColor(230, 226, 211, 120), "Base", minPrice, maxPrice);
@@ -318,12 +327,29 @@ private:
 
   QPointF pointAtTime(qint64 ms, double price, double minPrice, double maxPrice) const {
     if (candles_.isEmpty()) return {};
+    const int index = indexAtTime(ms);
+    return pointAt(index, price, minPrice, maxPrice);
+  }
+
+  int indexAtTime(qint64 ms) const {
+    if (candles_.isEmpty()) return -1;
+    if (ms > candles_.last().ms) {
+      const qint64 step = barIntervalMs();
+      return candleCount() - 1 + static_cast<int>(std::ceil(double(ms - candles_.last().ms) / std::max<qint64>(1, step)));
+    }
     const auto it = std::lower_bound(candles_.begin(), candles_.end(), ms, [](const Candle &c, qint64 t) {
       return c.ms < t;
     });
     int index = it == candles_.end() ? candleCount() - 1 : static_cast<int>(std::distance(candles_.begin(), it));
-    index = std::clamp(index, 0, candleCount() - 1);
-    return pointAt(index, price, minPrice, maxPrice);
+    return std::clamp(index, 0, candleCount() - 1);
+  }
+
+  qint64 barIntervalMs() const {
+    if (candles_.size() >= 2) {
+      const qint64 diff = candles_.last().ms - candles_[candles_.size() - 2].ms;
+      if (diff > 0) return diff;
+    }
+    return 60000;
   }
 
   qint64 jsonMs(const QJsonValue &value) const {
@@ -334,14 +360,54 @@ private:
     const QJsonObject point = payload.value("point").toObject();
     const double price = point.value("price").toDouble(std::numeric_limits<double>::quiet_NaN());
     if (!std::isfinite(price)) return;
+    const QString side = point.value("side").toString();
+    const qint64 logicalStart = jsonMs(point.value("time"));
     const qint64 start = jsonMs(point.value("display_time").isUndefined() ? point.value("time") : point.value("display_time"));
-    const qint64 end = candles_.isEmpty() ? start : candles_.last().ms;
+    const qint64 end = rangeEndMs(side, logicalStart);
     const QPointF a = pointAtTime(start, price, minPrice, maxPrice);
     const QPointF b = pointAtTime(end, price, minPrice, maxPrice);
-    p.setPen(QPen(QColor(114, 217, 247, 170), 1, Qt::DashLine));
+    const QColor color = side == "HIGH" ? QColor(245, 158, 11, 199) : QColor(56, 189, 248, 199);
+    p.setPen(QPen(color, 1, Qt::DashLine));
     p.drawLine(a, b);
-    p.setPen(QColor("#72d9f7"));
-    p.drawText(a + QPointF(4, -5), point.value("side").toString("Range"));
+    p.setPen(color);
+    p.drawText(a + QPointF(4, -5), side.isEmpty() ? "Range" : side);
+  }
+
+  qint64 rangeEndMs(const QString &side, qint64 start) const {
+    qint64 end = 0;
+    for (const QJsonValue &value : overlayEvents_) {
+      const QJsonObject event = value.toObject();
+      if (event.value("eventType").toString() != "RANGE_BOUNDARY_ENDED") continue;
+      const QJsonObject payload = parsePayload(event);
+      if (payload.value("side").toString() != side) continue;
+      if (jsonMs(payload.value("start_time")) != start) continue;
+      const qint64 candidate = jsonMs(payload.value("end_time"));
+      if (candidate > 0 && (end == 0 || candidate < end)) end = candidate;
+    }
+    if (end > 0) return end;
+    const qint64 base = candles_.isEmpty() ? start : candles_.last().ms;
+    return base + 10 * barIntervalMs();
+  }
+
+  void drawRangeTouchEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, double minPrice, double maxPrice) {
+    const bool upperBreak = payload.value("side").toString() == "UPPER";
+    const qint64 time = jsonMs(event.value("eventTime"));
+    const int index = indexAtTime(time);
+    if (index < 0 || index >= candleCount()) return;
+    const double price = upperBreak ? candles_[index].high : candles_[index].low;
+    const QPointF pos = pointAt(index, price, minPrice, maxPrice) + QPointF(0, upperBreak ? -14 : 14);
+    QPolygonF arrow;
+    if (upperBreak) {
+      arrow << QPointF(pos.x(), pos.y() - 8) << QPointF(pos.x() - 5, pos.y() + 2) << QPointF(pos.x() + 5, pos.y() + 2);
+    } else {
+      arrow << QPointF(pos.x(), pos.y() + 8) << QPointF(pos.x() - 5, pos.y() - 2) << QPointF(pos.x() + 5, pos.y() - 2);
+    }
+    const QColor color = upperBreak ? up() : down();
+    p.setBrush(color);
+    p.setPen(Qt::NoPen);
+    p.drawPolygon(arrow);
+    p.setPen(color);
+    p.drawText(pos + QPointF(8, upperBreak ? 3 : 5), upperBreak ? "Break ↑" : "Break ↓");
   }
 
   void drawNEvent(QPainter &p, const QJsonObject &n, const QColor &color, const QString &label, double minPrice, double maxPrice) {
@@ -381,7 +447,7 @@ private:
 
   void drawPositionEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, double minPrice, double maxPrice) {
     const qint64 start = jsonMs(payload.value("entry_time").isUndefined() ? event.value("eventTime") : payload.value("entry_time"));
-    const qint64 end = candles_.isEmpty() ? start : candles_.last().ms;
+    const qint64 end = positionEndMs(payload, start);
     const double entry = payload.value("exec_price").toDouble(payload.value("entry").toDouble(event.value("price").toDouble(std::numeric_limits<double>::quiet_NaN())));
     const double sl = payload.value("sl").toDouble(std::numeric_limits<double>::quiet_NaN());
     const double tp1 = payload.value("tp1").toDouble(std::numeric_limits<double>::quiet_NaN());
@@ -406,6 +472,23 @@ private:
       p.setPen(Qt::NoPen);
       p.drawPolygon(arrow);
     }
+  }
+
+  qint64 positionEndMs(const QJsonObject &openPayload, qint64 entryTime) const {
+    const double positionId = openPayload.value("position_id").toDouble(0);
+    for (const QJsonValue &value : overlayEvents_) {
+      const QJsonObject event = value.toObject();
+      if (event.value("eventType").toString() != "POSITION_CLOSED") continue;
+      const QJsonObject payload = parsePayload(event);
+      const double closePositionId = payload.value("position_id").toDouble(0);
+      const qint64 closeEntryTime = jsonMs(payload.value("entry_time"));
+      if ((positionId > 0 && closePositionId == positionId) || (positionId <= 0 && closeEntryTime == entryTime)) {
+        const qint64 exit = jsonMs(payload.value("exit_time").isUndefined() ? event.value("eventTime") : payload.value("exit_time"));
+        if (exit > 0) return exit;
+      }
+    }
+    const qint64 base = candles_.isEmpty() ? entryTime : candles_.last().ms;
+    return base + 5 * barIntervalMs();
   }
 
   void paintLayerHints(QPainter &p) {
@@ -444,10 +527,32 @@ private:
 
   void paintCrosshair(QPainter &p) {
     if (hoveredIndex_ < 0 || hoveredIndex_ >= candleCount()) return;
+    double minPrice, maxPrice;
+    visibleRange(minPrice, maxPrice);
     const QRectF r = plotRect();
     const double x = r.left() + (hoveredIndex_ - visibleStart_ + 0.5) * barStep();
     p.setPen(QPen(dark_ ? QColor(244, 239, 227, 70) : QColor(19, 25, 22, 70), 1, Qt::DashLine));
     p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+    if (hasMouse_ && r.contains(mousePos_)) {
+      p.drawLine(QPointF(r.left(), mousePos_.y()), QPointF(r.right(), mousePos_.y()));
+      drawAxisTag(p, QRectF(r.right() + 6, mousePos_.y() - 9, 66, 18), QString::number(priceForY(mousePos_.y(), minPrice, maxPrice), 'f', 2), QColor("#f0b64f"));
+      const QString time = QDateTime::fromMSecsSinceEpoch(candles_[hoveredIndex_].ms).toString("MM-dd HH:mm");
+      drawAxisTag(p, QRectF(x - 48, r.bottom() + 6, 96, 18), time, QColor("#f0b64f"));
+    }
+    const double closeY = yFor(candles_[hoveredIndex_].close, minPrice, maxPrice);
+    drawAxisTag(p, QRectF(r.right() + 6, closeY - 9, 66, 18), QString::number(candles_[hoveredIndex_].close, 'f', 2), candles_[hoveredIndex_].close >= candles_[hoveredIndex_].open ? up() : down());
+  }
+
+  void drawAxisTag(QPainter &p, const QRectF &rect, const QString &text, const QColor &color) {
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    p.drawRect(rect);
+    p.setPen(QColor("#111813"));
+    QFont f = font();
+    f.setPixelSize(10);
+    f.setWeight(QFont::DemiBold);
+    p.setFont(f);
+    p.drawText(rect, Qt::AlignCenter, text);
   }
 
   void paintOhlcSketch(QPainter &p) {
@@ -503,7 +608,10 @@ private:
   bool markerVisible_ = true;
   int visibleStart_ = 0;
   int visibleCount_ = 160;
+  int rightOffsetBars_ = 40;
   int hoveredIndex_ = -1;
+  bool hasMouse_ = false;
+  QPointF mousePos_;
   bool dragging_ = false;
   QPoint dragStart_;
   int dragVisibleStart_ = 0;
