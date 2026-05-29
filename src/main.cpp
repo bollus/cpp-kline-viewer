@@ -595,28 +595,28 @@ private:
     engine.globalObject().setProperty("bar_index", candleSeries(engine, candles, [](const Candle &, int i) { return static_cast<double>(i); }));
     engine.globalObject().setProperty("last_bar_index", QJSValue(candles.isEmpty() ? -1 : static_cast<int>(candles.size()) - 1));
     const QString prelude = R"JS(
-      const input = {
+      globalThis.input = {
         int: (value, label = "", min = -2147483648, max = 2147483647) => __api.inputInt(value, label, min, max),
         float: (value, label = "", min = -Number.MAX_VALUE, max = Number.MAX_VALUE) => __api.inputFloat(value, label, min, max),
         bool: (value, label = "") => __api.inputBool(value, label)
       };
-      const location = { abovebar: "abovebar", belowbar: "belowbar", absolute: "absolute" };
-      function indicator(name, options = {}) { __api.indicator(name, options); }
-      function plot(series, options = {}) { __api.plot(series, options); }
-      function plotshape(conditions, options = {}) { __api.plotshape(conditions, options); }
-      function box(options = {}) { __api.box(options); }
-      function line(options = {}) { __api.line(options); }
-      function label(options = {}) { __api.label(options); }
-      function ref(series, barsBack = 1) {
+      globalThis.location = { abovebar: "abovebar", belowbar: "belowbar", absolute: "absolute" };
+      globalThis.indicator = (name, options = {}) => __api.indicator(name, options);
+      globalThis.plot = (series, options = {}) => __api.plot(series, options);
+      globalThis.plotshape = (conditions, options = {}) => __api.plotshape(conditions, options);
+      globalThis.box = (options = {}) => __api.box(options);
+      globalThis.line = (options = {}) => __api.line(options);
+      globalThis.label = (options = {}) => __api.label(options);
+      globalThis.ref = (series, barsBack = 1) => {
         const out = new Array(series.length).fill(null);
         for (let i = barsBack; i < series.length; i++) out[i] = series[i - barsBack];
         return out;
-      }
-      function nz(series, value = 0) {
+      };
+      globalThis.nz = (series, value = 0) => {
         if (Array.isArray(series)) return series.map(v => Number.isFinite(v) ? v : value);
         return Number.isFinite(series) ? series : value;
-      }
-      const console = { log: (value) => __api.log(String(value)) };
+      };
+      globalThis.console = { log: (value) => __api.log(String(value)) };
     )JS";
     QJSValue preludeResult = engine.evaluate(prelude, "indicator-runtime.js");
     if (preludeResult.isError()) {
