@@ -3,8 +3,23 @@ name: Build macOS C++ K-Line Viewer
 on:
   workflow_dispatch:
   push:
-    paths:
+    branches:
       - "**"
+    tags:
+      - "v*"
+    paths:
+      - "src/**"
+      - "resources/**"
+      - "fonts/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/macos-cpp-kline-viewer.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-cpp-kline-viewer-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -24,7 +39,7 @@ jobs:
           cache: true
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQ4J_UPDATE_REPO="${{ github.repository }}"
 
       - name: Build
         run: cmake --build build --config Release
@@ -50,3 +65,9 @@ jobs:
         with:
           name: q4j-kline-viewer-macos
           path: build/package/q4j-kline-viewer-macos.dmg
+
+      - name: Upload dmg to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/package/q4j-kline-viewer-macos.dmg

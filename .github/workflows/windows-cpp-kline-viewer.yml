@@ -3,8 +3,24 @@ name: Build Windows C++ K-Line Viewer
 on:
   workflow_dispatch:
   push:
-    paths:
+    branches:
       - "**"
+    tags:
+      - "v*"
+    paths:
+      - "src/**"
+      - "resources/**"
+      - "fonts/**"
+      - "triplets/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/windows-cpp-kline-viewer.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-cpp-kline-viewer-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -14,28 +30,56 @@ jobs:
     runs-on: windows-latest
     env:
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+      VCPKG_DEFAULT_TRIPLET: "x64-windows-static-release"
       VCPKG_FEATURE_FLAGS: "binarycaching"
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free disk space
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Get-PSDrive C | Format-Table -AutoSize
+          $paths = @(
+            $env:ANDROID_HOME,
+            $env:ANDROID_SDK_ROOT,
+            "C:\Android",
+            "C:\ghcup",
+            "C:\hostedtoolcache\windows\CodeQL"
+          ) | Where-Object { $_ -and (Test-Path $_) }
+          foreach ($path in $paths) {
+            Write-Host "Removing $path"
+            Remove-Item -Recurse -Force $path
+          }
+          Get-PSDrive C | Format-Table -AutoSize
+
       - name: Cache vcpkg artifacts
+        id: cache-vcpkg
         uses: actions/cache@v4
         with:
           path: |
+            C:\vcpkg\installed
+            C:\vcpkg\downloads
             ${{ github.workspace }}/vcpkg_installed
             ${{ github.workspace }}/build/vcpkg_installed
             ${{ env.LOCALAPPDATA }}\vcpkg\archives
-          key: windows-static-qt-${{ hashFiles('CMakeLists.txt') }}
+          key: windows-static-qt-v2-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'triplets/**', '.github/workflows/windows-cpp-kline-viewer.yml') }}
+          restore-keys: |
+            windows-static-qt-v2-${{ runner.os }}-
 
       - name: Install static Qt
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           vcpkg install `
-            qtbase:x64-windows-static-release `
-            qtwebsockets:x64-windows-static-release `
+            qtbase `
+            qtwebsockets `
+            --triplet x64-windows-static-release `
             --overlay-triplets=triplets `
+            --x-buildtrees-root="$env:RUNNER_TEMP\vcpkg-buildtrees" `
+            --x-packages-root="$env:RUNNER_TEMP\vcpkg-packages" `
             --clean-after-build
 
       - name: Configure
@@ -48,6 +92,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
             -DVCPKG_OVERLAY_TRIPLETS="triplets" `
+            -DQ4J_UPDATE_REPO="${{ github.repository }}" `
             -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>"
 
       - name: Build
@@ -62,3 +107,9 @@ jobs:
         with:
           name: q4j-kline-viewer-windows-exe
           path: build/Release/q4j_kline_viewer.exe
+
+      - name: Upload exe to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Release/q4j_kline_viewer.exe

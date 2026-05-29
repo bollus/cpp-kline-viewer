@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(q4j_kline_viewer LANGUAGES CXX)
+project(q4j_kline_viewer VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +8,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets OpenGLWidgets)
+
+set(Q4J_UPDATE_REPO "" CACHE STRING "GitHub repository used by the in-app updater, for example owner/repo")
 
 qt_add_executable(q4j_kline_viewer
   WIN32
@@ -40,4 +42,10 @@ target_link_libraries(q4j_kline_viewer
     Qt6::Network
     Qt6::WebSockets
     Qt6::OpenGLWidgets
+)
+
+target_compile_definitions(q4j_kline_viewer
+  PRIVATE
+    Q4J_APP_VERSION="${PROJECT_VERSION}"
+    Q4J_UPDATE_REPO="${Q4J_UPDATE_REPO}"
 )

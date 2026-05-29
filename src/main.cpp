@@ -3,10 +3,19 @@
 #include <QtWebSockets/QWebSocket>
 #include <QOpenGLWidget>
 #include <QFontDatabase>
+#include <QDesktopServices>
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
+
+#ifndef Q4J_APP_VERSION
+#define Q4J_APP_VERSION "1.0.0"
+#endif
+
+#ifndef Q4J_UPDATE_REPO
+#define Q4J_UPDATE_REPO ""
+#endif
 
 struct Candle {
   qint64 ms = 0;
@@ -40,6 +49,34 @@ static qint64 intervalMs(const QString &interval) {
     {"1d", 86400000}, {"1w", 604800000}
   };
   return values.value(interval, 60000);
+}
+
+static QVector<int> versionParts(QString value) {
+  value = value.trimmed();
+  if (value.startsWith('v', Qt::CaseInsensitive)) value.remove(0, 1);
+  QVector<int> parts;
+  for (const QString &part : value.split('.')) {
+    QString digits;
+    for (const QChar ch : part) {
+      if (ch.isDigit()) digits.append(ch);
+      else break;
+    }
+    parts.push_back(digits.isEmpty() ? 0 : digits.toInt());
+  }
+  while (parts.size() < 3) parts.push_back(0);
+  return parts;
+}
+
+static int compareVersions(const QString &left, const QString &right) {
+  const QVector<int> a = versionParts(left);
+  const QVector<int> b = versionParts(right);
+  const int count = std::max(a.size(), b.size());
+  for (int i = 0; i < count; ++i) {
+    const int av = i < a.size() ? a[i] : 0;
+    const int bv = i < b.size() ? b[i] : 0;
+    if (av != bv) return av < bv ? -1 : 1;
+  }
+  return 0;
 }
 
 static QString loadBundledFonts() {
@@ -1931,6 +1968,8 @@ private:
     backend_->setObjectName("toolButton");
     wsLogButton_ = new QPushButton("WS日志");
     wsLogButton_->setObjectName("toolButton");
+    updateButton_ = new QPushButton("检查更新");
+    updateButton_->setObjectName("toolButton");
     theme_ = new QPushButton("☾");
     theme_->setObjectName("iconButton");
     refresh_ = new QPushButton("刷新");
@@ -1942,6 +1981,7 @@ private:
     settings_->setFixedWidth(75);
     backend_->setFixedWidth(88);
     wsLogButton_->setFixedWidth(68);
+    updateButton_->setFixedWidth(76);
     theme_->setFixedWidth(34);
     refresh_->setFixedWidth(56);
     status_->setFixedWidth(120);
@@ -1950,6 +1990,7 @@ private:
     headerLayout->addWidget(settings_);
     headerLayout->addWidget(backend_);
     headerLayout->addWidget(wsLogButton_);
+    headerLayout->addWidget(updateButton_);
     headerLayout->addStretch(1);
     headerLayout->addWidget(theme_);
     headerLayout->addWidget(refresh_);
@@ -2090,6 +2131,7 @@ private:
       if (debugDialog_) debugDialog_->raise();
       if (debugDialog_) debugDialog_->activateWindow();
     });
+    connect(updateButton_, &QPushButton::clicked, this, &MainWindow::checkForUpdates);
     connect(theme_, &QPushButton::clicked, this, [this] {
       dark_ = !dark_;
       applyTheme();
@@ -2521,6 +2563,83 @@ private:
     if (wasAtBottom && bar) bar->setValue(bar->maximum());
   }
 
+  void checkForUpdates() {
+    const QString repo = QString::fromUtf8(Q4J_UPDATE_REPO).trimmed();
+    if (repo.isEmpty()) {
+      QMessageBox::information(this, "检查更新", "当前构建没有配置 GitHub 仓库，无法在线检查更新。");
+      return;
+    }
+    updateButton_->setEnabled(false);
+    updateButton_->setText("检查中");
+    QUrl url(QString("https://api.github.com/repos/%1/releases/latest").arg(repo));
+    QNetworkRequest request(url);
+    request.setRawHeader("Accept", "application/vnd.github+json");
+    request.setRawHeader("User-Agent", "q4j-kline-viewer");
+    QNetworkReply *reply = updateNetwork_.get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+      updateButton_->setEnabled(true);
+      updateButton_->setText("检查更新");
+      const QByteArray body = reply->readAll();
+      reply->deleteLater();
+      if (reply->error() != QNetworkReply::NoError) {
+        QMessageBox::warning(this, "检查更新", QString("检查失败：%1").arg(reply->errorString()));
+        return;
+      }
+      handleUpdateReply(body);
+    });
+  }
+
+  void handleUpdateReply(const QByteArray &body) {
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (!doc.isObject()) {
+      QMessageBox::warning(this, "检查更新", "GitHub Release 响应格式错误。");
+      return;
+    }
+    const QJsonObject release = doc.object();
+    const QString latest = release.value("tag_name").toString().trimmed();
+    if (latest.isEmpty()) {
+      QMessageBox::warning(this, "检查更新", "没有读取到最新版本号。");
+      return;
+    }
+    const QString current = QString::fromUtf8(Q4J_APP_VERSION);
+    if (compareVersions(latest, current) <= 0) {
+      QMessageBox::information(this, "检查更新", QString("当前已是最新版本：%1").arg(current));
+      return;
+    }
+
+    QUrl downloadUrl;
+    const QJsonArray assets = release.value("assets").toArray();
+    for (const QJsonValue &value : assets) {
+      const QJsonObject asset = value.toObject();
+      const QString name = asset.value("name").toString().toLower();
+#ifdef Q_OS_WIN
+      const bool matches = name.endsWith(".exe");
+#elif defined(Q_OS_MACOS)
+      const bool matches = name.endsWith(".dmg");
+#else
+      const bool matches = name.endsWith(".appimage") || name.endsWith(".tar.gz") || name.endsWith(".zip");
+#endif
+      if (matches) {
+        downloadUrl = QUrl(asset.value("browser_download_url").toString());
+        break;
+      }
+    }
+    if (downloadUrl.isEmpty()) downloadUrl = QUrl(release.value("html_url").toString());
+    if (downloadUrl.isEmpty()) {
+      QMessageBox::warning(this, "检查更新", QString("发现新版本 %1，但没有找到可下载文件。").arg(latest));
+      return;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle("发现新版本");
+    box.setText(QString("发现新版本 %1，当前版本 %2。").arg(latest, current));
+    box.setInformativeText("是否打开下载链接？");
+    QPushButton *open = box.addButton("打开下载", QMessageBox::AcceptRole);
+    box.addButton("取消", QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == open) QDesktopServices::openUrl(downloadUrl);
+  }
+
   void refresh() {
     events_->setText("Events --");
     range_->setText("Visible Range --");
@@ -2541,6 +2660,7 @@ private:
   QPushButton *settings_ = nullptr;
   QPushButton *backend_ = nullptr;
   QPushButton *wsLogButton_ = nullptr;
+  QPushButton *updateButton_ = nullptr;
   QPushButton *theme_ = nullptr;
   QPushButton *refresh_ = nullptr;
   QPushButton *minimize_ = nullptr;
@@ -2557,6 +2677,7 @@ private:
   QLineEdit *backendUrl_ = nullptr;
   QLineEdit *wsUrl_ = nullptr;
   QCheckBox *realtime_ = nullptr;
+  QNetworkAccessManager updateNetwork_;
   CandleClient client_;
   bool dark_ = true;
   bool windowDragging_ = false;
