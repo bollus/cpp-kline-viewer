@@ -8,6 +8,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets OpenGLWidgets)
+find_package(Qt6 QUIET OPTIONAL_COMPONENTS Qml)
 
 set(Q4J_UPDATE_REPO "" CACHE STRING "GitHub repository used by the in-app updater, for example owner/repo")
 set(Q4J_APP_VERSION "${PROJECT_VERSION}" CACHE STRING "Application version shown in the app and embedded in packages")
@@ -59,8 +60,21 @@ target_link_libraries(q4j_kline_viewer
     Qt6::OpenGLWidgets
 )
 
+if(Qt6Qml_FOUND)
+  target_link_libraries(q4j_kline_viewer PRIVATE Qt6::Qml)
+  target_compile_definitions(q4j_kline_viewer PRIVATE Q4J_HAS_QJS_ENGINE=1)
+else()
+  target_compile_definitions(q4j_kline_viewer PRIVATE Q4J_HAS_QJS_ENGINE=0)
+endif()
+
 target_compile_definitions(q4j_kline_viewer
   PRIVATE
     Q4J_APP_VERSION="${Q4J_APP_VERSION}"
     Q4J_UPDATE_REPO="${Q4J_UPDATE_REPO}"
+)
+
+add_custom_command(TARGET q4j_kline_viewer POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/indicators"
+    "$<TARGET_FILE_DIR:q4j_kline_viewer>/indicators"
 )
