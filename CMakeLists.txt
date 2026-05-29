@@ -10,6 +10,15 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets OpenGLWidgets)
 
 set(Q4J_UPDATE_REPO "" CACHE STRING "GitHub repository used by the in-app updater, for example owner/repo")
+string(REPLACE "." "," Q4J_APP_VERSION_COMMA "${PROJECT_VERSION}.0")
+
+if(WIN32)
+  configure_file(
+    resources/app.rc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/app.rc
+    @ONLY
+  )
+endif()
 
 qt_add_executable(q4j_kline_viewer
   WIN32
@@ -19,7 +28,7 @@ qt_add_executable(q4j_kline_viewer
 )
 
 if(WIN32)
-  target_sources(q4j_kline_viewer PRIVATE resources/app.rc)
+  target_sources(q4j_kline_viewer PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/app.rc)
 endif()
 
 if(APPLE)

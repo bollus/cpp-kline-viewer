@@ -3,16 +3,8 @@ name: Build macOS C++ K-Line Viewer
 on:
   workflow_dispatch:
   push:
-    branches:
-      - "**"
     tags:
       - "v*"
-    paths:
-      - "src/**"
-      - "resources/**"
-      - "fonts/**"
-      - "CMakeLists.txt"
-      - ".github/workflows/macos-cpp-kline-viewer.yml"
 
 permissions:
   contents: write

@@ -3,17 +3,8 @@ name: Build Windows C++ K-Line Viewer
 on:
   workflow_dispatch:
   push:
-    branches:
-      - "**"
     tags:
       - "v*"
-    paths:
-      - "src/**"
-      - "resources/**"
-      - "fonts/**"
-      - "triplets/**"
-      - "CMakeLists.txt"
-      - ".github/workflows/windows-cpp-kline-viewer.yml"
 
 permissions:
   contents: write
@@ -100,7 +91,25 @@ jobs:
 
       - name: List package output
         shell: pwsh
-        run: Get-ChildItem -Recurse build/Release | Select-Object FullName, Length
+        run: |
+          Get-ChildItem -Recurse build/Release | Select-Object FullName, Length
+          Get-FileHash build/Release/q4j_kline_viewer.exe -Algorithm SHA256
+
+      - name: Scan exe with Microsoft Defender
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Resolve-Path build/Release/q4j_kline_viewer.exe
+          Update-MpSignature
+          Start-MpScan -ScanPath $exe -ScanType CustomScan
+          if (!(Test-Path $exe)) {
+            throw "Microsoft Defender removed or quarantined the exe"
+          }
+          $threats = Get-MpThreatDetection | Where-Object { $_.Resources -contains $exe.Path }
+          if ($threats) {
+            $threats | Format-List *
+            throw "Microsoft Defender detected the exe"
+          }
 
       - name: Upload Windows exe
         uses: actions/upload-artifact@v4
