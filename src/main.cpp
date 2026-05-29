@@ -3805,10 +3805,16 @@ private:
     auto *customButtonsLayout = new QHBoxLayout(customButtons);
     customButtonsLayout->setContentsMargins(0, 0, 0, 0);
     customButtonsLayout->setSpacing(8);
+    auto *newIndicator = new QPushButton("新建指标");
+    auto *copyBuiltinFvg = new QPushButton("复制内置 FVG");
     auto *openIndicators = new QPushButton("打开目录");
     auto *reloadIndicators = new QPushButton("重载脚本");
+    newIndicator->setObjectName("toolButton");
+    copyBuiltinFvg->setObjectName("toolButton");
     openIndicators->setObjectName("toolButton");
     reloadIndicators->setObjectName("toolButton");
+    customButtonsLayout->addWidget(newIndicator);
+    customButtonsLayout->addWidget(copyBuiltinFvg);
     customButtonsLayout->addWidget(openIndicators);
     customButtonsLayout->addWidget(reloadIndicators);
     customButtonsLayout->addStretch(1);
@@ -3821,6 +3827,12 @@ private:
     errorLabel->setObjectName("sectionLabel");
     layout->addWidget(errorLabel);
     layout->addWidget(indicatorErrorText_);
+    connect(newIndicator, &QPushButton::clicked, this, [this] {
+      openIndicatorEditor({}, uniqueIndicatorPath("custom-indicator"), newIndicatorTemplate(), "新建指标");
+    });
+    connect(copyBuiltinFvg, &QPushButton::clicked, this, [this] {
+      openIndicatorEditor({}, uniqueIndicatorPath("fvg-circle-copy"), builtinFvgCircleTemplate(), "复制内置 FVG");
+    });
     connect(openIndicators, &QPushButton::clicked, this, [this] {
       QDesktopServices::openUrl(QUrl::fromLocalFile(chart_->indicatorScriptDirectory()));
     });
@@ -3854,15 +3866,42 @@ private:
       return;
     }
     for (const IndicatorScript &script : scripts) {
+      auto *row = new QWidget;
+      auto *rowLayout = new QHBoxLayout(row);
+      rowLayout->setContentsMargins(0, 0, 0, 0);
+      rowLayout->setSpacing(8);
       auto *check = new QCheckBox(QString("%1  (%2)").arg(script.name, QFileInfo(script.path).fileName()));
       check->setChecked(script.enabled);
       check->setEnabled(chart_->indicatorScriptRuntimeAvailable());
       check->setToolTip(script.path);
-      customIndicatorLayout_->addWidget(check);
+      auto *edit = new QPushButton("编辑");
+      auto *copy = new QPushButton("复制");
+      auto *remove = new QPushButton("删除");
+      edit->setObjectName("toolButton");
+      copy->setObjectName("toolButton");
+      remove->setObjectName("toolButton");
+      edit->setFixedWidth(52);
+      copy->setFixedWidth(52);
+      remove->setFixedWidth(52);
+      rowLayout->addWidget(check, 1);
+      rowLayout->addWidget(edit);
+      rowLayout->addWidget(copy);
+      rowLayout->addWidget(remove);
+      customIndicatorLayout_->addWidget(row);
       connect(check, &QCheckBox::toggled, this, [this, id = script.id](bool enabled) {
         chart_->setCustomIndicatorEnabled(id, enabled);
         saveIndicatorSettings();
         updateIndicatorErrorText();
+      });
+      connect(edit, &QPushButton::clicked, this, [this, script] {
+        openIndicatorEditor(script.path, script.path, readTextFile(script.path), QString("编辑 %1").arg(script.name));
+      });
+      connect(copy, &QPushButton::clicked, this, [this, script] {
+        const QString base = QFileInfo(script.path).baseName() + "-copy";
+        openIndicatorEditor({}, uniqueIndicatorPath(base), readTextFile(script.path), QString("复制 %1").arg(script.name));
+      });
+      connect(remove, &QPushButton::clicked, this, [this, script] {
+        deleteIndicatorScript(script);
       });
       const QVector<IndicatorInput> inputs = chart_->customIndicatorInputs(script.id);
       if (!inputs.isEmpty()) {
@@ -3922,6 +3961,165 @@ private:
     if (!indicatorErrorText_) return;
     const QStringList errors = chart_->indicatorErrors();
     indicatorErrorText_->setPlainText(errors.isEmpty() ? "无" : errors.join('\n'));
+  }
+
+  QString readTextFile(const QString &path) const {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return {};
+    return QString::fromUtf8(file.readAll());
+  }
+
+  QString sanitizedIndicatorBaseName(QString value) const {
+    value = value.trimmed().toLower();
+    value.replace(QRegularExpression("[^a-z0-9_\\-]+"), "-");
+    while (value.startsWith('-') || value.startsWith('_')) value.remove(0, 1);
+    while (value.endsWith('-') || value.endsWith('_')) value.chop(1);
+    return value.isEmpty() ? "custom-indicator" : value;
+  }
+
+  QString uniqueIndicatorPath(const QString &baseName) const {
+    const QString dir = chart_->indicatorScriptDirectory();
+    const QString base = sanitizedIndicatorBaseName(baseName);
+    QString path = QDir(dir).filePath(base + ".js");
+    int index = 2;
+    while (QFileInfo::exists(path)) {
+      path = QDir(dir).filePath(QString("%1-%2.js").arg(base).arg(index++));
+    }
+    return path;
+  }
+
+  QString indicatorPathFromEditorName(const QString &text) const {
+    QString name = text.trimmed();
+    if (name.endsWith(".js", Qt::CaseInsensitive)) name.chop(3);
+    return QDir(chart_->indicatorScriptDirectory()).filePath(sanitizedIndicatorBaseName(name) + ".js");
+  }
+
+  QString newIndicatorTemplate() const {
+    return R"JS(indicator("Custom Indicator", { overlay: true })
+
+const length = input.int(20, "Length", 1, 500)
+const ma = ta.ema(close, length)
+
+plot(ma, {
+  title: "EMA",
+  color: "#409cff",
+  width: 2
+})
+)JS";
+  }
+
+  QString builtinFvgCircleTemplate() const {
+    return R"JS(indicator("FVG Circle", { overlay: true })
+
+const n = input.int(1, "Left/Right bars (N)", 1, 50)
+const minGapTicks = input.int(0, "Min gap ticks", 0, 10000)
+
+function decimalPlaces(value) {
+  const text = Math.abs(value).toFixed(8).replace(/0+$/, "").replace(/\.$/, "")
+  const dot = text.indexOf(".")
+  return dot < 0 ? 0 : text.length - dot - 1
+}
+
+let decimals = 0
+const start = Math.max(0, close.length - 600)
+for (let i = start; i < close.length; i++) {
+  decimals = Math.max(decimals, decimalPlaces(open[i]), decimalPlaces(high[i]), decimalPlaces(low[i]), decimalPlaces(close[i]))
+}
+const minGap = minGapTicks * Math.pow(10, -Math.min(decimals, 8))
+
+const marks = new Array(close.length).fill(false)
+
+for (let current = 2 * n; current < close.length; current++) {
+  let rightLow = Infinity
+  let rightHigh = -Infinity
+  for (let i = current - n + 1; i <= current; i++) {
+    rightLow = Math.min(rightLow, low[i])
+    rightHigh = Math.max(rightHigh, high[i])
+  }
+
+  let leftHigh = -Infinity
+  let leftLow = Infinity
+  for (let i = current - 2 * n; i <= current - n - 1; i++) {
+    leftHigh = Math.max(leftHigh, high[i])
+    leftLow = Math.min(leftLow, low[i])
+  }
+
+  if ((leftHigh + minGap) < rightLow || (leftLow - minGap) > rightHigh) {
+    marks[current - n] = true
+  }
+}
+
+plotshape(marks, {
+  location: location.abovebar,
+  text: "",
+  color: "#409cff"
+})
+)JS";
+  }
+
+  void reloadIndicatorsFromDisk() {
+    chart_->reloadCustomIndicators();
+    loadIndicatorSettings();
+    rebuildCustomIndicatorList();
+    updateIndicatorErrorText();
+  }
+
+  void openIndicatorEditor(const QString &originalPath, const QString &savePath, const QString &initialCode, const QString &title) {
+    QDialog dialog(this);
+    dialog.setWindowTitle(title);
+    dialog.setMinimumSize(820, 640);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(18, 16, 18, 16);
+    layout->setSpacing(10);
+
+    auto *form = new QFormLayout;
+    form->setSpacing(10);
+    auto *fileName = new QLineEdit(QFileInfo(savePath).fileName());
+    fileName->setMinimumHeight(32);
+    form->addRow("文件名", fileName);
+    layout->addLayout(form);
+
+    auto *editor = new QPlainTextEdit;
+    editor->setObjectName("debugLog");
+    editor->setPlainText(initialCode);
+    QFont codeFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    codeFont.setPointSize(10);
+    editor->setFont(codeFont);
+    editor->setTabStopDistance(QFontMetricsF(codeFont).horizontalAdvance(' ') * 2);
+    layout->addWidget(editor, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Save);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons->button(QDialogButtonBox::Save), &QPushButton::clicked, &dialog, [this, &dialog, fileName, editor, originalPath] {
+      const QString target = indicatorPathFromEditorName(fileName->text());
+      if (target.isEmpty()) return;
+      if (QFileInfo::exists(target) && QFileInfo(target).canonicalFilePath() != QFileInfo(originalPath).canonicalFilePath()) {
+        if (QMessageBox::question(&dialog, "覆盖指标", "同名指标已存在，是否覆盖？") != QMessageBox::Yes) return;
+      }
+      QFile file(target);
+      if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        QMessageBox::warning(&dialog, "保存失败", QString("无法写入：%1").arg(target));
+        return;
+      }
+      file.write(editor->toPlainText().toUtf8());
+      file.close();
+      if (!originalPath.isEmpty() && QFileInfo(originalPath).canonicalFilePath() != QFileInfo(target).canonicalFilePath()) {
+        QFile::remove(originalPath);
+      }
+      dialog.accept();
+      reloadIndicatorsFromDisk();
+    });
+    dialog.exec();
+  }
+
+  void deleteIndicatorScript(const IndicatorScript &script) {
+    if (QMessageBox::question(indicatorDialog_, "删除指标", QString("删除 %1？\n%2").arg(script.name, script.path)) != QMessageBox::Yes) return;
+    if (!QFile::remove(script.path)) {
+      QMessageBox::warning(indicatorDialog_, "删除失败", QString("无法删除：%1").arg(script.path));
+      return;
+    }
+    reloadIndicatorsFromDisk();
   }
 
   void buildBackendDialog() {
