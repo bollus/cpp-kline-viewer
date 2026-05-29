@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(q4j_kline_viewer VERSION 1.0.6 LANGUAGES CXX)
+project(q4j_kline_viewer VERSION 1.0.7 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

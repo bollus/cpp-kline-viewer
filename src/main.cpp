@@ -121,13 +121,26 @@ class ChartWidget : public QOpenGLWidget {
   Q_OBJECT
 
 public:
+  enum class AnnotationTool {
+    None,
+    LongBlock,
+    ShortBlock,
+    SegmentLine,
+    HorizontalLine,
+    VerticalLine,
+    Polyline,
+    Rectangle
+  };
+
   explicit ChartWidget(QWidget *parent = nullptr) : QOpenGLWidget(parent) {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+    buildAnnotationStyleToolbar();
   }
 
   void setDark(bool value) {
     dark_ = value;
+    syncAnnotationStyleToolbar();
     update();
   }
 
@@ -233,13 +246,47 @@ public:
     update();
   }
 
+  void setAnnotationTool(AnnotationTool tool) {
+    if (annotationTool_ == tool) return;
+    annotationTool_ = tool;
+    drawingAnnotation_ = false;
+    draftPolyline_.clear();
+    updateCursor();
+    emit annotationToolChanged(tool);
+    update();
+  }
+
+  void resetAnnotationTool() {
+    setAnnotationTool(AnnotationTool::None);
+  }
+
+  void setMagnetEnabled(bool enabled) {
+    magnetEnabled_ = enabled;
+    update();
+  }
+
 signals:
   void hoveredCandleChanged(const Candle *candle);
   void olderCandlesRequested(qint64 beforeMs);
   void overlayRangeChanged(qint64 startMs, qint64 endMs);
   void visibleRangeChanged(qint64 startMs, qint64 endMs, int firstIndex, int lastIndex);
+  void annotationToolChanged(AnnotationTool tool);
 
 protected:
+  void keyPressEvent(QKeyEvent *event) override {
+    if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
+      deleteSelectedAnnotation();
+      event->accept();
+      return;
+    }
+    if (event->matches(QKeySequence::Undo)) {
+      undoAnnotation();
+      event->accept();
+      return;
+    }
+    QOpenGLWidget::keyPressEvent(event);
+  }
+
   void paintEvent(QPaintEvent *) override {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, false);
@@ -254,6 +301,7 @@ protected:
     paintGrid(p, minPrice, maxPrice);
     paintCandles(p);
     paintOverlays(p, minPrice, maxPrice);
+    paintManualAnnotations(p, minPrice, maxPrice);
     paintLatestPriceLine(p, minPrice, maxPrice);
     paintLayerHints(p);
     paintCrosshair(p);
@@ -262,8 +310,18 @@ protected:
   }
 
   void mouseMoveEvent(QMouseEvent *event) override {
-    mousePos_ = event->position();
+    mousePos_ = cursorPosition(event->position());
     hasMouse_ = true;
+    if (annotationDragMode_ != AnnotationDragMode::None) {
+      updateAnnotationDrag(event->position());
+      scheduleRepaint();
+      return;
+    }
+    if (drawingAnnotation_) {
+      draftPoint_ = chartPointFromPosition(event->position());
+      scheduleRepaint();
+      return;
+    }
     if (dragging_) {
       const int dx = event->position().x() - dragStart_.x();
       const int dy = event->position().y() - dragStart_.y();
@@ -293,7 +351,7 @@ protected:
       scheduleRepaint();
       return;
     }
-    hoveredIndex_ = indexAt(event->position().x());
+    hoveredIndex_ = indexAt(mousePos_.x());
     hoveredPositionIndex_ = positionHitboxAt(event->position());
     if (hoveredIndex_ >= 0 && hoveredIndex_ < candleCount()) {
       emit hoveredCandleChanged(&candles_[hoveredIndex_]);
@@ -311,10 +369,39 @@ protected:
     update();
   }
 
+  void resizeEvent(QResizeEvent *event) override {
+    QOpenGLWidget::resizeEvent(event);
+    syncAnnotationStyleToolbar();
+  }
+
   void mousePressEvent(QMouseEvent *event) override {
+    setFocus(Qt::MouseFocusReason);
+    if (annotationTool_ != AnnotationTool::None && event->button() == Qt::RightButton) {
+      if (annotationTool_ == AnnotationTool::Polyline && drawingAnnotation_) finishPolyline();
+      else if (!showPositionContextMenu(event->position(), event->globalPosition().toPoint())) showAnnotationContextMenu(event->position(), event->globalPosition().toPoint());
+      return;
+    }
+    if (annotationTool_ == AnnotationTool::None && event->button() == Qt::RightButton) {
+      if (!showPositionContextMenu(event->position(), event->globalPosition().toPoint())) showAnnotationContextMenu(event->position(), event->globalPosition().toPoint());
+      return;
+    }
     if (event->button() != Qt::LeftButton) return;
     if (toggleLayerAt(event->position())) {
       update();
+      return;
+    }
+    if (annotationTool_ == AnnotationTool::None) {
+      selectedAnnotation_ = annotationAt(event->position());
+      if (selectedAnnotation_ >= 0) {
+        startAnnotationDrag(event->position());
+        syncAnnotationStyleToolbar();
+        update();
+        return;
+      }
+      syncAnnotationStyleToolbar();
+    }
+    if (annotationTool_ != AnnotationTool::None && plotRect().contains(event->position())) {
+      handleAnnotationPress(event->position());
       return;
     }
     if (priceAxisRect().contains(event->position())) {
@@ -343,6 +430,14 @@ protected:
 
   void mouseReleaseEvent(QMouseEvent *event) override {
     if (event->button() == Qt::LeftButton) {
+      if (annotationDragMode_ != AnnotationDragMode::None) {
+        finishAnnotationDrag();
+        return;
+      }
+      if (drawingAnnotation_ && annotationTool_ != AnnotationTool::Polyline) {
+        handleAnnotationRelease(event->position());
+        return;
+      }
       dragging_ = false;
       xAxisScaling_ = false;
       yAxisScaling_ = false;
@@ -374,6 +469,10 @@ protected:
   }
 
   void mouseDoubleClickEvent(QMouseEvent *event) override {
+    if (event->button() == Qt::LeftButton && annotationTool_ == AnnotationTool::Polyline) {
+      finishPolyline();
+      return;
+    }
     if (event->button() == Qt::LeftButton && priceAxisRect().contains(event->position())) {
       manualPriceScale_ = 1.0;
       manualPriceOffset_ = 0.0;
@@ -484,6 +583,10 @@ private:
     return maxPrice - ((y - r.top()) / r.height()) * (maxPrice - minPrice);
   }
 
+  double indexForX(double x) const {
+    return visibleStart_ + (x - plotRect().left()) / std::max(0.05, barStep()) - 0.5;
+  }
+
   void paintBackground(QPainter &p) {
     p.fillRect(rect(), bg());
   }
@@ -571,6 +674,570 @@ private:
     p.restore();
   }
 
+  struct AnnotationPoint {
+    double index = 0.0;
+    double price = 0.0;
+  };
+
+  struct AnnotationStyle {
+    QColor line = QColor("#f0b64f");
+    QColor fill = QColor("#6ed7f6");
+    QColor profit = QColor("#20c997");
+    QColor loss = QColor("#ef5f78");
+    int lineWidth = 1;
+    int opacity = 58;
+  };
+
+  enum class AnnotationDragMode { None, Move, ResizePoint };
+
+  struct ManualAnnotation {
+    AnnotationTool tool = AnnotationTool::None;
+    QVector<AnnotationPoint> points;
+    AnnotationStyle style;
+  };
+
+  QPointF cursorPosition(const QPointF &pos) const {
+    if (!magnetEnabled_ || !plotRect().contains(pos) || candles_.isEmpty()) return pos;
+    double minPrice, maxPrice;
+    visibleRange(minPrice, maxPrice);
+    const AnnotationPoint point = chartPointFromPosition(pos);
+    return annotationPoint(point, minPrice, maxPrice);
+  }
+
+  AnnotationPoint chartPointFromPosition(const QPointF &pos) const {
+    double minPrice, maxPrice;
+    visibleRange(minPrice, maxPrice);
+    AnnotationPoint point{indexForX(pos.x()), priceForY(pos.y(), minPrice, maxPrice)};
+    if (!magnetEnabled_ || candles_.isEmpty()) return point;
+    const int center = std::clamp(static_cast<int>(std::round(point.index)), 0, candleCount() - 1);
+    double bestPrice = point.price;
+    int bestIndex = center;
+    double bestDistance = std::numeric_limits<double>::max();
+    const double maxXDistance = std::max(14.0, barStep() * 1.2);
+    for (int i = std::max(0, center - 1); i <= std::min(candleCount() - 1, center + 1); ++i) {
+      const Candle &c = candles_[i];
+      const double candleX = pointAtIndex(i, c.close, minPrice, maxPrice).x();
+      if (std::abs(candleX - pos.x()) > maxXDistance) continue;
+      const QVector<double> prices{c.open, c.high, c.low, c.close};
+      for (double price : prices) {
+        const double y = yFor(price, minPrice, maxPrice);
+        const double distance = std::hypot((candleX - pos.x()) * 0.65, y - pos.y());
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestPrice = price;
+          bestIndex = i;
+        }
+      }
+    }
+    if (bestDistance <= 22.0) return AnnotationPoint{static_cast<double>(bestIndex), bestPrice};
+    return point;
+  }
+
+  QPointF annotationPoint(const AnnotationPoint &point, double minPrice, double maxPrice) const {
+    return pointAtIndex(point.index, point.price, minPrice, maxPrice);
+  }
+
+  QRectF annotationRect(const ManualAnnotation &annotation, double minPrice, double maxPrice) const {
+    if (annotation.points.size() < 2) return {};
+    return QRectF(annotationPoint(annotation.points[0], minPrice, maxPrice),
+                  annotationPoint(annotation.points[1], minPrice, maxPrice)).normalized();
+  }
+
+  void handleAnnotationPress(const QPointF &pos) {
+    const AnnotationPoint point = chartPointFromPosition(pos);
+    if (annotationTool_ == AnnotationTool::LongBlock || annotationTool_ == AnnotationTool::ShortBlock) {
+      addPositionAnnotation(point, annotationTool_);
+      resetAnnotationTool();
+      return;
+    }
+    if (annotationTool_ == AnnotationTool::HorizontalLine || annotationTool_ == AnnotationTool::VerticalLine) {
+      manualAnnotations_.push_back({annotationTool_, {point}, defaultAnnotationStyle(annotationTool_)});
+      selectedAnnotation_ = manualAnnotations_.size() - 1;
+      rememberAnnotationStyle(manualAnnotations_.last());
+      syncAnnotationStyleToolbar();
+      update();
+      resetAnnotationTool();
+      return;
+    }
+    if (annotationTool_ == AnnotationTool::Polyline) {
+      draftPolyline_.push_back(point);
+      drawingAnnotation_ = true;
+      draftPoint_ = point;
+      update();
+      return;
+    }
+    drawingAnnotation_ = true;
+    draftStart_ = point;
+    draftPoint_ = point;
+  }
+
+  void handleAnnotationRelease(const QPointF &pos) {
+    const AnnotationPoint end = chartPointFromPosition(pos);
+    drawingAnnotation_ = false;
+    if (std::abs(end.index - draftStart_.index) < 0.05 && std::abs(end.price - draftStart_.price) < 1e-9) {
+      update();
+      return;
+    }
+    if (annotationTool_ == AnnotationTool::SegmentLine) {
+      manualAnnotations_.push_back({annotationTool_, {draftStart_, {end.index, draftStart_.price}}, defaultAnnotationStyle(annotationTool_)});
+    } else {
+      manualAnnotations_.push_back({annotationTool_, {draftStart_, end}, defaultAnnotationStyle(annotationTool_)});
+    }
+    selectedAnnotation_ = manualAnnotations_.size() - 1;
+    rememberAnnotationStyle(manualAnnotations_.last());
+    syncAnnotationStyleToolbar();
+    update();
+    resetAnnotationTool();
+  }
+
+  void finishPolyline() {
+    if (annotationTool_ == AnnotationTool::Polyline && draftPolyline_.size() >= 2) {
+      manualAnnotations_.push_back({AnnotationTool::Polyline, draftPolyline_, defaultAnnotationStyle(AnnotationTool::Polyline)});
+      selectedAnnotation_ = manualAnnotations_.size() - 1;
+      rememberAnnotationStyle(manualAnnotations_.last());
+      syncAnnotationStyleToolbar();
+    }
+    draftPolyline_.clear();
+    drawingAnnotation_ = false;
+    update();
+  }
+
+  AnnotationStyle defaultAnnotationStyle(AnnotationTool tool) const {
+    const int key = static_cast<int>(tool);
+    if (annotationDefaultStyles_.contains(key)) return annotationDefaultStyles_.value(key);
+    AnnotationStyle style;
+    style.line = dark_ ? QColor("#f0b64f") : QColor("#b27a17");
+    style.fill = QColor("#6ed7f6");
+    style.lineWidth = 1;
+    style.opacity = 58;
+    if (tool == AnnotationTool::LongBlock) {
+      style.line = QColor("#20c997");
+      style.fill = QColor("#20c997");
+      style.profit = QColor("#20c997");
+      style.loss = QColor("#ef5f78");
+      style.opacity = dark_ ? 72 : 54;
+    } else if (tool == AnnotationTool::ShortBlock) {
+      style.line = QColor("#ef5f78");
+      style.fill = QColor("#ef5f78");
+      style.profit = QColor("#20c997");
+      style.loss = QColor("#ef5f78");
+      style.opacity = dark_ ? 72 : 54;
+    }
+    return style;
+  }
+
+  void rememberAnnotationStyle(const ManualAnnotation &annotation) {
+    annotationDefaultStyles_.insert(static_cast<int>(annotation.tool), annotation.style);
+  }
+
+  void addPositionAnnotation(const AnnotationPoint &entry, AnnotationTool tool) {
+    double minPrice, maxPrice;
+    visibleRange(minPrice, maxPrice);
+    const double half = std::max((maxPrice - minPrice) * 0.075, std::abs(entry.price) * 0.0015);
+    const double endIndex = entry.index + std::max(24.0, visibleCount_ * 0.22);
+    AnnotationPoint profit{endIndex, tool == AnnotationTool::LongBlock ? entry.price + half : entry.price - half};
+    AnnotationPoint loss{endIndex, tool == AnnotationTool::LongBlock ? entry.price - half : entry.price + half};
+    manualAnnotations_.push_back({tool, {entry, profit, loss}, defaultAnnotationStyle(tool)});
+    selectedAnnotation_ = manualAnnotations_.size() - 1;
+    rememberAnnotationStyle(manualAnnotations_.last());
+    syncAnnotationStyleToolbar();
+    update();
+  }
+
+  void undoAnnotation() {
+    if (drawingAnnotation_) {
+      drawingAnnotation_ = false;
+      draftPolyline_.clear();
+      update();
+      return;
+    }
+    if (manualAnnotations_.isEmpty()) return;
+    manualAnnotations_.removeLast();
+    selectedAnnotation_ = manualAnnotations_.isEmpty() ? -1 : std::min(selectedAnnotation_, static_cast<int>(manualAnnotations_.size()) - 1);
+    update();
+  }
+
+  void deleteSelectedAnnotation() {
+    if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size()) return;
+    manualAnnotations_.removeAt(selectedAnnotation_);
+    selectedAnnotation_ = -1;
+    syncAnnotationStyleToolbar();
+    update();
+  }
+
+  QColor annotationColor(const ManualAnnotation &annotation) const {
+    if (annotation.style.line.isValid()) {
+      QColor color = annotation.style.line;
+      if (annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) color.setAlpha(annotation.style.opacity);
+      return color;
+    }
+    if (annotation.tool == AnnotationTool::LongBlock) return QColor(32, 201, 151, dark_ ? 78 : 58);
+    if (annotation.tool == AnnotationTool::ShortBlock) return QColor(239, 95, 120, dark_ ? 78 : 58);
+    return dark_ ? QColor(240, 182, 79, 220) : QColor(178, 122, 23, 230);
+  }
+
+  void drawManualAnnotation(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice, bool draft = false, bool selected = false) {
+    if (annotation.points.isEmpty()) return;
+    const QRectF r = plotRect();
+    QColor color = annotationColor(annotation);
+    if (draft) color.setAlpha(std::min(230, color.alpha() + 45));
+    QColor lineColor = annotation.style.line.isValid() ? annotation.style.line : color;
+    lineColor.setAlpha(draft ? 245 : 220);
+    const int lineWidth = std::max(1, annotation.style.lineWidth);
+    p.save();
+    p.setClipRect(r);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    if (annotation.tool == AnnotationTool::HorizontalLine) {
+      const double y = yFor(annotation.points[0].price, minPrice, maxPrice);
+      p.setPen(QPen(lineColor, lineWidth));
+      p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+    } else if (annotation.tool == AnnotationTool::VerticalLine) {
+      const double x = pointAtIndex(annotation.points[0].index, annotation.points[0].price, minPrice, maxPrice).x();
+      p.setPen(QPen(lineColor, lineWidth));
+      p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+    } else if (annotation.tool == AnnotationTool::SegmentLine && annotation.points.size() >= 2) {
+      p.setPen(QPen(lineColor, lineWidth));
+      p.drawLine(annotationPoint(annotation.points[0], minPrice, maxPrice), annotationPoint(annotation.points[1], minPrice, maxPrice));
+    } else if (annotation.tool == AnnotationTool::Polyline && annotation.points.size() >= 2) {
+      QPolygonF polyline;
+      for (const AnnotationPoint &point : annotation.points) polyline << annotationPoint(point, minPrice, maxPrice);
+      p.setPen(QPen(lineColor, lineWidth));
+      p.drawPolyline(polyline);
+    } else if ((annotation.tool == AnnotationTool::Rectangle || annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) && annotation.points.size() >= 2) {
+      if ((annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) && annotation.points.size() >= 3) {
+        drawPositionAnnotation(p, annotation, minPrice, maxPrice, lineColor, draft, selected);
+        p.restore();
+        return;
+      }
+      QRectF box = annotationRect(annotation, minPrice, maxPrice);
+      const bool block = annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock;
+      QColor fill = annotation.style.fill.isValid() ? annotation.style.fill : color;
+      fill.setAlpha(annotation.style.opacity);
+      p.setPen(QPen(lineColor, lineWidth));
+      p.setBrush(block ? fill : Qt::NoBrush);
+      p.drawRect(box);
+      if (block) {
+        p.setPen(lineColor);
+        p.setFont(uiFont(11, QFont::DemiBold));
+        p.drawText(box.adjusted(6, 4, -6, -4), Qt::AlignTop | Qt::AlignLeft, annotation.tool == AnnotationTool::LongBlock ? "L" : "S");
+      }
+    }
+    if (selected) drawAnnotationSelection(p, annotation, minPrice, maxPrice);
+    p.restore();
+  }
+
+  void paintManualAnnotations(QPainter &p, double minPrice, double maxPrice) {
+    for (int i = 0; i < manualAnnotations_.size(); ++i) drawManualAnnotation(p, manualAnnotations_[i], minPrice, maxPrice, false, i == selectedAnnotation_);
+    if (drawingAnnotation_) {
+      if (annotationTool_ == AnnotationTool::Polyline) {
+        QVector<AnnotationPoint> points = draftPolyline_;
+        if (!points.isEmpty()) points.push_back(draftPoint_);
+        drawManualAnnotation(p, {AnnotationTool::Polyline, points, defaultAnnotationStyle(AnnotationTool::Polyline)}, minPrice, maxPrice, true);
+      } else {
+        const AnnotationPoint end = annotationTool_ == AnnotationTool::SegmentLine ? AnnotationPoint{draftPoint_.index, draftStart_.price} : draftPoint_;
+        drawManualAnnotation(p, {annotationTool_, {draftStart_, end}, defaultAnnotationStyle(annotationTool_)}, minPrice, maxPrice, true);
+      }
+    }
+  }
+
+  void drawPositionAnnotation(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice, const QColor &lineColor, bool draft, bool selected) {
+    const AnnotationPoint entry = annotation.points[0];
+    const AnnotationPoint profit = annotation.points[1];
+    const AnnotationPoint loss = annotation.points[2];
+    const bool isLong = annotation.tool == AnnotationTool::LongBlock;
+    const double endIndex = std::max({entry.index, profit.index, loss.index});
+    const double top = std::max({entry.price, profit.price, loss.price});
+    const double bottom = std::min({entry.price, profit.price, loss.price});
+    const qint64 startMs = timeForIndex(entry.index);
+    const qint64 endMs = timeForIndex(endIndex);
+    QColor profitColor = annotation.style.profit;
+    QColor lossColor = annotation.style.loss;
+    profitColor.setAlpha(annotation.style.opacity);
+    lossColor.setAlpha(annotation.style.opacity);
+    if (draft) {
+      profitColor.setAlpha(std::min(160, profitColor.alpha() + 35));
+      lossColor.setAlpha(std::min(160, lossColor.alpha() + 35));
+    }
+    const double profitBoundary = isLong ? top : bottom;
+    const double lossBoundary = isLong ? bottom : top;
+    drawRangeArea(p, startMs, endMs, entry.price, profitBoundary, profitColor, minPrice, maxPrice);
+    drawRangeArea(p, startMs, endMs, entry.price, lossBoundary, lossColor, minPrice, maxPrice);
+    p.setPen(QPen(lineColor, std::max(1, annotation.style.lineWidth), Qt::SolidLine));
+    p.drawLine(pointAtTime(startMs, entry.price, minPrice, maxPrice), pointAtTime(endMs, entry.price, minPrice, maxPrice));
+    QColor profitLine = annotation.style.profit;
+    QColor lossLine = annotation.style.loss;
+    profitLine.setAlpha(225);
+    lossLine.setAlpha(225);
+    p.setPen(QPen(profitLine, std::max(1, annotation.style.lineWidth), Qt::DashLine));
+    p.drawLine(pointAtTime(startMs, profitBoundary, minPrice, maxPrice), pointAtTime(endMs, profitBoundary, minPrice, maxPrice));
+    p.setPen(QPen(lossLine, std::max(1, annotation.style.lineWidth), Qt::DashLine));
+    p.drawLine(pointAtTime(startMs, lossBoundary, minPrice, maxPrice), pointAtTime(endMs, lossBoundary, minPrice, maxPrice));
+    if (selected) drawAnnotationSelection(p, annotation, minPrice, maxPrice);
+  }
+
+  void drawAnnotationSelection(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice) {
+    p.save();
+    p.setPen(QPen(QColor("#f0b64f"), 1.4));
+    p.setBrush(QColor("#f0b64f"));
+    for (const AnnotationPoint &point : annotation.points) {
+      const QPointF pos = annotationPoint(point, minPrice, maxPrice);
+      QRectF handle(pos.x() - 3, pos.y() - 3, 6, 6);
+      p.drawRect(handle);
+    }
+    p.restore();
+  }
+
+  QRectF annotationBounds(const ManualAnnotation &annotation, double minPrice, double maxPrice) const {
+    QRectF bounds;
+    for (const AnnotationPoint &point : annotation.points) {
+      const QPointF pos = annotationPoint(point, minPrice, maxPrice);
+      const QRectF handle(pos.x() - 6, pos.y() - 6, 12, 12);
+      bounds = bounds.isNull() ? handle : bounds.united(handle);
+    }
+    return bounds.adjusted(-8, -8, 8, 8);
+  }
+
+  int annotationHandleAt(const ManualAnnotation &annotation, const QPointF &pos, double minPrice, double maxPrice) const {
+    for (int i = 0; i < annotation.points.size(); ++i) {
+      const QPointF handle = annotationPoint(annotation.points[i], minPrice, maxPrice);
+      if (QRectF(handle.x() - 7, handle.y() - 7, 14, 14).contains(pos)) return i;
+    }
+    return -1;
+  }
+
+  int annotationAt(const QPointF &pos) const {
+    double minPrice, maxPrice;
+    visibleRange(minPrice, maxPrice);
+    for (int i = manualAnnotations_.size() - 1; i >= 0; --i) {
+      const ManualAnnotation &annotation = manualAnnotations_[i];
+      if (annotationBounds(annotation, minPrice, maxPrice).contains(pos)) return i;
+    }
+    return -1;
+  }
+
+  void startAnnotationDrag(const QPointF &pos) {
+    if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size()) return;
+    double minPrice, maxPrice;
+    visibleRange(minPrice, maxPrice);
+    annotationDragOriginal_ = manualAnnotations_[selectedAnnotation_].points;
+    annotationDragStart_ = chartPointFromPosition(pos);
+    const int handle = annotationHandleAt(manualAnnotations_[selectedAnnotation_], pos, minPrice, maxPrice);
+    if (handle >= 0) {
+      annotationDragMode_ = AnnotationDragMode::ResizePoint;
+      annotationDragPoint_ = handle;
+    } else {
+      annotationDragMode_ = AnnotationDragMode::Move;
+      annotationDragPoint_ = -1;
+    }
+  }
+
+  void updateAnnotationDrag(const QPointF &pos) {
+    if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size()) return;
+    ManualAnnotation &annotation = manualAnnotations_[selectedAnnotation_];
+    const AnnotationPoint current = chartPointFromPosition(pos);
+    if (annotationDragMode_ == AnnotationDragMode::ResizePoint && annotationDragPoint_ >= 0 && annotationDragPoint_ < annotation.points.size()) {
+      annotation.points = annotationDragOriginal_;
+      annotation.points[annotationDragPoint_] = current;
+      if ((annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) && annotation.points.size() >= 3 && annotationDragPoint_ > 0) {
+        annotation.points[1].index = current.index;
+        annotation.points[2].index = current.index;
+      }
+      return;
+    }
+    if (annotationDragMode_ == AnnotationDragMode::Move) {
+      const double di = current.index - annotationDragStart_.index;
+      const double dp = current.price - annotationDragStart_.price;
+      annotation.points = annotationDragOriginal_;
+      for (AnnotationPoint &point : annotation.points) {
+        point.index += di;
+        point.price += dp;
+      }
+    }
+  }
+
+  void finishAnnotationDrag() {
+    if (selectedAnnotation_ >= 0 && selectedAnnotation_ < manualAnnotations_.size()) rememberAnnotationStyle(manualAnnotations_[selectedAnnotation_]);
+    annotationDragMode_ = AnnotationDragMode::None;
+    annotationDragPoint_ = -1;
+    annotationDragOriginal_.clear();
+    syncAnnotationStyleToolbar();
+    update();
+  }
+
+  void showAnnotationContextMenu(const QPointF &pos, const QPoint &globalPos) {
+    const int index = annotationAt(pos);
+    if (index < 0) return;
+    selectedAnnotation_ = index;
+    QMenu menu;
+    QAction *style = menu.addAction("样式设置");
+    QAction *remove = menu.addAction("删除");
+    QAction *chosen = menu.exec(globalPos);
+    if (chosen == remove) deleteSelectedAnnotation();
+    else if (chosen == style) editSelectedAnnotationStyle();
+    update();
+  }
+
+  void editSelectedAnnotationStyle() {
+    if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size()) return;
+    ManualAnnotation &annotation = manualAnnotations_[selectedAnnotation_];
+    QDialog dialog(this);
+    dialog.setWindowTitle("标记样式");
+    auto *layout = new QFormLayout(&dialog);
+    auto *lineButton = new QPushButton(annotation.style.line.name());
+    auto *fillButton = new QPushButton(annotation.style.fill.name());
+    auto *profitButton = new QPushButton(annotation.style.profit.name());
+    auto *lossButton = new QPushButton(annotation.style.loss.name());
+    auto *width = new QSpinBox;
+    width->setRange(1, 8);
+    width->setValue(annotation.style.lineWidth);
+    auto *opacity = new QSlider(Qt::Horizontal);
+    opacity->setRange(10, 220);
+    opacity->setValue(annotation.style.opacity);
+    QColor line = annotation.style.line;
+    QColor fill = annotation.style.fill;
+    QColor profit = annotation.style.profit;
+    QColor loss = annotation.style.loss;
+    connect(lineButton, &QPushButton::clicked, &dialog, [&] {
+      const QColor color = QColorDialog::getColor(line, &dialog, "线条颜色");
+      if (color.isValid()) {
+        line = color;
+        lineButton->setText(color.name());
+      }
+    });
+    connect(fillButton, &QPushButton::clicked, &dialog, [&] {
+      const QColor color = QColorDialog::getColor(fill, &dialog, "背景颜色");
+      if (color.isValid()) {
+        fill = color;
+        fillButton->setText(color.name());
+      }
+    });
+    connect(profitButton, &QPushButton::clicked, &dialog, [&] {
+      const QColor color = QColorDialog::getColor(profit, &dialog, "盈利区颜色");
+      if (color.isValid()) {
+        profit = color;
+        profitButton->setText(color.name());
+      }
+    });
+    connect(lossButton, &QPushButton::clicked, &dialog, [&] {
+      const QColor color = QColorDialog::getColor(loss, &dialog, "亏损区颜色");
+      if (color.isValid()) {
+        loss = color;
+        lossButton->setText(color.name());
+      }
+    });
+    layout->addRow("线条颜色", lineButton);
+    if (annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) {
+      layout->addRow("盈利区颜色", profitButton);
+      layout->addRow("亏损区颜色", lossButton);
+    } else {
+      layout->addRow("背景颜色", fillButton);
+    }
+    layout->addRow("线条粗细", width);
+    layout->addRow("透明度", opacity);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    layout->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() == QDialog::Accepted) {
+      annotation.style.line = line;
+      annotation.style.fill = fill;
+      annotation.style.profit = profit;
+      annotation.style.loss = loss;
+      annotation.style.lineWidth = width->value();
+      annotation.style.opacity = opacity->value();
+      rememberAnnotationStyle(annotation);
+      syncAnnotationStyleToolbar();
+      update();
+    }
+  }
+
+  enum class StyleColorRole { Line, Fill, Profit, Loss };
+
+  QPushButton *styleColorButton(const QString &tooltip) {
+    auto *button = new QPushButton;
+    button->setFixedSize(24, 24);
+    button->setToolTip(tooltip);
+    return button;
+  }
+
+  void buildAnnotationStyleToolbar() {
+    annotationStyleToolbar_ = new QFrame(this);
+    annotationStyleToolbar_->setObjectName("annotationFloatingToolbar");
+    auto *layout = new QHBoxLayout(annotationStyleToolbar_);
+    layout->setContentsMargins(8, 5, 8, 5);
+    layout->setSpacing(6);
+    lineColorButton_ = styleColorButton("线条颜色");
+    fillColorButton_ = styleColorButton("背景颜色");
+    profitColorButton_ = styleColorButton("盈利区颜色");
+    lossColorButton_ = styleColorButton("亏损区颜色");
+    lineWidthSpin_ = new QSpinBox;
+    lineWidthSpin_->setRange(1, 8);
+    lineWidthSpin_->setFixedWidth(52);
+    layout->addWidget(lineColorButton_);
+    layout->addWidget(fillColorButton_);
+    layout->addWidget(profitColorButton_);
+    layout->addWidget(lossColorButton_);
+    layout->addWidget(lineWidthSpin_);
+    annotationStyleToolbar_->hide();
+
+    connect(lineColorButton_, &QPushButton::clicked, this, [this] { chooseSelectedColor(StyleColorRole::Line); });
+    connect(fillColorButton_, &QPushButton::clicked, this, [this] { chooseSelectedColor(StyleColorRole::Fill); });
+    connect(profitColorButton_, &QPushButton::clicked, this, [this] { chooseSelectedColor(StyleColorRole::Profit); });
+    connect(lossColorButton_, &QPushButton::clicked, this, [this] { chooseSelectedColor(StyleColorRole::Loss); });
+    connect(lineWidthSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+      if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size() || syncingStyleToolbar_) return;
+      manualAnnotations_[selectedAnnotation_].style.lineWidth = value;
+      rememberAnnotationStyle(manualAnnotations_[selectedAnnotation_]);
+      update();
+    });
+  }
+
+  void updateColorButton(QPushButton *button, const QColor &color) {
+    if (!button) return;
+    button->setStyleSheet(QString("QPushButton { background: %1; border: 1px solid rgba(230,226,211,90); border-radius: 2px; }").arg(color.name()));
+  }
+
+  void syncAnnotationStyleToolbar() {
+    if (!annotationStyleToolbar_) return;
+    const bool hasSelection = selectedAnnotation_ >= 0 && selectedAnnotation_ < manualAnnotations_.size();
+    annotationStyleToolbar_->setVisible(hasSelection);
+    if (!hasSelection) return;
+    const ManualAnnotation &annotation = manualAnnotations_[selectedAnnotation_];
+    const bool positionBlock = annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock;
+    fillColorButton_->setVisible(!positionBlock);
+    profitColorButton_->setVisible(positionBlock);
+    lossColorButton_->setVisible(positionBlock);
+    updateColorButton(lineColorButton_, annotation.style.line);
+    updateColorButton(fillColorButton_, annotation.style.fill);
+    updateColorButton(profitColorButton_, annotation.style.profit);
+    updateColorButton(lossColorButton_, annotation.style.loss);
+    syncingStyleToolbar_ = true;
+    lineWidthSpin_->setValue(annotation.style.lineWidth);
+    syncingStyleToolbar_ = false;
+    const int w = positionBlock ? 178 : 118;
+    annotationStyleToolbar_->setFixedSize(w, 34);
+    annotationStyleToolbar_->move(std::max(54, (width() - w) / 2), 18);
+    annotationStyleToolbar_->raise();
+  }
+
+  void chooseSelectedColor(StyleColorRole role) {
+    if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size()) return;
+    ManualAnnotation &annotation = manualAnnotations_[selectedAnnotation_];
+    QColor current = annotation.style.line;
+    if (role == StyleColorRole::Fill) current = annotation.style.fill;
+    if (role == StyleColorRole::Profit) current = annotation.style.profit;
+    if (role == StyleColorRole::Loss) current = annotation.style.loss;
+    const QColor color = QColorDialog::getColor(current, this, "选择颜色");
+    if (!color.isValid()) return;
+    if (role == StyleColorRole::Line) annotation.style.line = color;
+    if (role == StyleColorRole::Fill) annotation.style.fill = color;
+    if (role == StyleColorRole::Profit) annotation.style.profit = color;
+    if (role == StyleColorRole::Loss) annotation.style.loss = color;
+    rememberAnnotationStyle(annotation);
+    syncAnnotationStyleToolbar();
+    update();
+  }
+
   QPointF pointAt(int index, double price, double minPrice, double maxPrice) const {
     return pointAtIndex(index, price, minPrice, maxPrice);
   }
@@ -579,6 +1246,17 @@ private:
     const QRectF r = plotRect();
     const double x = r.left() + (index - visibleStart_ + 0.5) * barStep();
     return QPointF(x, yFor(price, minPrice, maxPrice));
+  }
+
+  qint64 timeForIndex(double index) const {
+    if (candles_.isEmpty()) return 0;
+    const qint64 step = barIntervalMs();
+    if (index <= 0) return candles_.first().ms + static_cast<qint64>(index * step);
+    if (index >= candleCount() - 1) return candles_.last().ms + static_cast<qint64>((index - (candleCount() - 1)) * step);
+    const int left = std::clamp(static_cast<int>(std::floor(index)), 0, candleCount() - 1);
+    const int right = std::min(candleCount() - 1, left + 1);
+    const double t = index - left;
+    return candles_[left].ms + static_cast<qint64>((candles_[right].ms - candles_[left].ms) * t);
   }
 
   int visibleEnd() const {
@@ -1221,6 +1899,11 @@ private:
     p.drawText(rect, Qt::AlignCenter, text);
   }
 
+  void updateCursor() {
+    if (annotationTool_ == AnnotationTool::None) unsetCursor();
+    else setCursor(Qt::CrossCursor);
+  }
+
   QString formatCompact(double value, int precision = 2) const {
     return std::isfinite(value) ? QString::number(value, 'f', precision) : "--";
   }
@@ -1347,6 +2030,26 @@ private:
   double dragPriceRange_ = 1.0;
   bool repaintScheduled_ = false;
   QVector<PositionHitbox> positionHitboxes_;
+  AnnotationTool annotationTool_ = AnnotationTool::None;
+  bool magnetEnabled_ = true;
+  bool drawingAnnotation_ = false;
+  AnnotationPoint draftStart_;
+  AnnotationPoint draftPoint_;
+  QVector<AnnotationPoint> draftPolyline_;
+  QVector<ManualAnnotation> manualAnnotations_;
+  int selectedAnnotation_ = -1;
+  AnnotationDragMode annotationDragMode_ = AnnotationDragMode::None;
+  int annotationDragPoint_ = -1;
+  AnnotationPoint annotationDragStart_;
+  QVector<AnnotationPoint> annotationDragOriginal_;
+  QHash<int, AnnotationStyle> annotationDefaultStyles_;
+  QFrame *annotationStyleToolbar_ = nullptr;
+  QPushButton *lineColorButton_ = nullptr;
+  QPushButton *fillColorButton_ = nullptr;
+  QPushButton *profitColorButton_ = nullptr;
+  QPushButton *lossColorButton_ = nullptr;
+  QSpinBox *lineWidthSpin_ = nullptr;
+  bool syncingStyleToolbar_ = false;
 };
 
 class CandleClient : public QObject {
@@ -1916,6 +2619,110 @@ private:
     setGeometry(next);
   }
 
+  QIcon annotationIcon(ChartWidget::AnnotationTool tool) const {
+    QPixmap pixmap(28, 28);
+    pixmap.fill(Qt::transparent);
+    QPainter p(&pixmap);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor fg = dark_ ? QColor("#f4efe3") : QColor("#131916");
+    const QColor accent = QColor("#f0b64f");
+    p.setPen(QPen(fg, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    if (tool == ChartWidget::AnnotationTool::None) {
+      QPolygonF arrow{QPointF(8, 5), QPointF(20, 16), QPointF(14, 17), QPointF(17, 24), QPointF(13, 25), QPointF(10, 18), QPointF(6, 22)};
+      p.drawPolygon(arrow);
+    } else if (tool == ChartWidget::AnnotationTool::LongBlock || tool == ChartWidget::AnnotationTool::ShortBlock) {
+      const bool isLong = tool == ChartWidget::AnnotationTool::LongBlock;
+      QColor profit(32, 201, 151, 135);
+      QColor loss(239, 95, 120, 135);
+      QRectF top(7, 5, 14, 9);
+      QRectF bottom(7, 14, 14, 9);
+      p.fillRect(isLong ? top : bottom, profit);
+      p.fillRect(isLong ? bottom : top, loss);
+      p.setPen(QPen(fg, 1.6));
+      p.drawRect(QRectF(7, 5, 14, 18));
+      p.setPen(QPen(accent, 1.4));
+      p.drawLine(QPointF(5, 14), QPointF(23, 14));
+    } else if (tool == ChartWidget::AnnotationTool::SegmentLine) {
+      p.drawLine(QPointF(7, 20), QPointF(21, 8));
+    } else if (tool == ChartWidget::AnnotationTool::HorizontalLine) {
+      p.drawLine(QPointF(5, 14), QPointF(23, 14));
+    } else if (tool == ChartWidget::AnnotationTool::VerticalLine) {
+      p.drawLine(QPointF(14, 5), QPointF(14, 23));
+    } else if (tool == ChartWidget::AnnotationTool::Polyline) {
+      QPolygonF line{QPointF(5, 20), QPointF(11, 9), QPointF(17, 15), QPointF(23, 6)};
+      p.drawPolyline(line);
+    } else if (tool == ChartWidget::AnnotationTool::Rectangle) {
+      p.drawRect(QRectF(7, 7, 14, 14));
+    }
+    return QIcon(pixmap);
+  }
+
+  QIcon magnetIcon() const {
+    QPixmap pixmap(28, 28);
+    pixmap.fill(Qt::transparent);
+    QPainter p(&pixmap);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor fg = dark_ ? QColor("#f4efe3") : QColor("#131916");
+    p.setPen(QPen(fg, 2, Qt::SolidLine, Qt::RoundCap));
+    p.setBrush(Qt::NoBrush);
+    p.drawArc(QRectF(6, 6, 6, 16), 90 * 16, 180 * 16);
+    p.drawArc(QRectF(16, 6, 6, 16), -90 * 16, 180 * 16);
+    p.drawLine(QPointF(9, 6), QPointF(9, 11));
+    p.drawLine(QPointF(19, 6), QPointF(19, 11));
+    p.drawLine(QPointF(9, 22), QPointF(9, 18));
+    p.drawLine(QPointF(19, 22), QPointF(19, 18));
+    return QIcon(pixmap);
+  }
+
+  QPushButton *annotationButton(const QString &tip, ChartWidget::AnnotationTool tool) {
+    auto *button = new QPushButton;
+    button->setObjectName("annotationToolButton");
+    button->setCheckable(true);
+    button->setFixedSize(34, 34);
+    button->setIcon(annotationIcon(tool));
+    button->setIconSize(QSize(24, 24));
+    button->setToolTip(tip);
+    annotationGroup_->addButton(button, static_cast<int>(tool));
+    return button;
+  }
+
+  QFrame *buildAnnotationToolbar() {
+    auto *toolbar = new QFrame;
+    toolbar->setObjectName("annotationToolbar");
+    toolbar->setFixedWidth(44);
+    auto *layout = new QVBoxLayout(toolbar);
+    layout->setContentsMargins(5, 6, 5, 6);
+    layout->setSpacing(5);
+    annotationGroup_ = new QButtonGroup(this);
+    annotationGroup_->setExclusive(true);
+    auto *cursor = annotationButton("选择/拖动图表", ChartWidget::AnnotationTool::None);
+    cursor->setChecked(true);
+    layout->addWidget(cursor);
+    layout->addWidget(annotationButton("开仓区块 Long", ChartWidget::AnnotationTool::LongBlock));
+    layout->addWidget(annotationButton("开仓区块 Short", ChartWidget::AnnotationTool::ShortBlock));
+    layout->addWidget(annotationButton("单向横线：拖拽确定长度", ChartWidget::AnnotationTool::SegmentLine));
+    layout->addWidget(annotationButton("水平线：全屏", ChartWidget::AnnotationTool::HorizontalLine));
+    layout->addWidget(annotationButton("垂直线：全屏", ChartWidget::AnnotationTool::VerticalLine));
+    layout->addWidget(annotationButton("折线：连续点击，右键或双击结束", ChartWidget::AnnotationTool::Polyline));
+    layout->addWidget(annotationButton("矩形方框", ChartWidget::AnnotationTool::Rectangle));
+    auto *divider = new QFrame;
+    divider->setObjectName("annotationDivider");
+    divider->setFixedSize(24, 1);
+    layout->addWidget(divider);
+    magnetButton_ = new QPushButton;
+    magnetButton_->setObjectName("annotationToolButton");
+    magnetButton_->setCheckable(true);
+    magnetButton_->setChecked(true);
+    magnetButton_->setFixedSize(34, 34);
+    magnetButton_->setIcon(magnetIcon());
+    magnetButton_->setIconSize(QSize(24, 24));
+    magnetButton_->setToolTip("磁铁吸附：吸附到最近 K 线 OHLC");
+    layout->addWidget(magnetButton_);
+    layout->addStretch(1);
+    return toolbar;
+  }
+
   void buildUi() {
     auto *root = new QWidget;
     root->setObjectName("appShell");
@@ -2022,9 +2829,17 @@ private:
     headerLayout->addWidget(status_);
     layout->addWidget(header);
 
+    auto *chartRow = new QWidget;
+    chartRow->setObjectName("chartRow");
+    auto *chartRowLayout = new QHBoxLayout(chartRow);
+    chartRowLayout->setContentsMargins(0, 0, 0, 0);
+    chartRowLayout->setSpacing(8);
+    annotationToolbar_ = buildAnnotationToolbar();
+    chartRowLayout->addWidget(annotationToolbar_);
     chart_ = new ChartWidget;
     chart_->installEventFilter(this);
-    layout->addWidget(chart_, 1);
+    chartRowLayout->addWidget(chart_, 1);
+    layout->addWidget(chartRow, 1);
 
     auto *footer = new QFrame;
     footer->setObjectName("footer");
@@ -2167,6 +2982,13 @@ private:
     connect(minimize_, &QPushButton::clicked, this, &QWidget::showMinimized);
     connect(maximize_, &QPushButton::clicked, this, &MainWindow::toggleMaximized);
     connect(close_, &QPushButton::clicked, this, &QWidget::close);
+    connect(annotationGroup_, &QButtonGroup::idClicked, this, [this](int id) {
+      chart_->setAnnotationTool(static_cast<ChartWidget::AnnotationTool>(id));
+    });
+    connect(chart_, &ChartWidget::annotationToolChanged, this, [this](ChartWidget::AnnotationTool tool) {
+      if (QAbstractButton *button = annotationGroup_->button(static_cast<int>(tool))) button->setChecked(true);
+    });
+    connect(magnetButton_, &QPushButton::toggled, chart_, &ChartWidget::setMagnetEnabled);
     connect(backend_, &QPushButton::clicked, this, [this] {
       showBackendDialog(false);
     });
@@ -2309,6 +3131,47 @@ private:
         background: #0e1311;
         border: 1px solid rgba(230, 226, 211, 34);
         border-radius: 3px;
+      }
+      QWidget#chartRow { background: transparent; }
+      QFrame#annotationToolbar {
+        background: #0e1311;
+        border: 1px solid rgba(230, 226, 211, 34);
+        border-radius: 3px;
+      }
+      QFrame#annotationDivider {
+        background: rgba(230, 226, 211, 34);
+        border: 0;
+      }
+      QFrame#annotationFloatingToolbar {
+        background: rgba(14, 19, 17, 232);
+        border: 1px solid rgba(230, 226, 211, 48);
+        border-radius: 3px;
+      }
+      QFrame#annotationFloatingToolbar QSpinBox {
+        min-height: 22px; max-height: 22px;
+        background: #151d19;
+        border: 1px solid rgba(230, 226, 211, 44);
+        color: #f4efe3;
+        padding: 0 4px;
+      }
+      QPushButton#annotationToolButton {
+        min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px;
+        background: transparent;
+        border: 1px solid rgba(230, 226, 211, 30);
+        border-radius: 2px;
+        padding: 0;
+        color: #d9d4c7;
+        font-size: 15px;
+        font-weight: 500;
+      }
+      QPushButton#annotationToolButton:hover {
+        background: #18211d;
+        border-color: rgba(240, 182, 79, 145);
+      }
+      QPushButton#annotationToolButton:checked {
+        background: rgba(240, 182, 79, 42);
+        border-color: #f0b64f;
+        color: #f0b64f;
       }
       QWidget#brandBox { background: transparent; }
       QLabel#brandBadge {
@@ -2497,6 +3360,47 @@ private:
         background: #fffdf7;
         border: 1px solid rgba(23, 31, 27, 34);
         border-radius: 3px;
+      }
+      QWidget#chartRow { background: transparent; }
+      QFrame#annotationToolbar {
+        background: #fffdf7;
+        border: 1px solid rgba(23, 31, 27, 34);
+        border-radius: 3px;
+      }
+      QFrame#annotationDivider {
+        background: rgba(23, 31, 27, 34);
+        border: 0;
+      }
+      QFrame#annotationFloatingToolbar {
+        background: rgba(255, 253, 247, 235);
+        border: 1px solid rgba(23, 31, 27, 42);
+        border-radius: 3px;
+      }
+      QFrame#annotationFloatingToolbar QSpinBox {
+        min-height: 22px; max-height: 22px;
+        background: #ffffff;
+        border: 1px solid rgba(23, 31, 27, 36);
+        color: #131916;
+        padding: 0 4px;
+      }
+      QPushButton#annotationToolButton {
+        min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px;
+        background: transparent;
+        border: 1px solid rgba(23, 31, 27, 30);
+        border-radius: 2px;
+        padding: 0;
+        color: #3b443e;
+        font-size: 15px;
+        font-weight: 500;
+      }
+      QPushButton#annotationToolButton:hover {
+        background: #ffffff;
+        border-color: rgba(178, 122, 23, 145);
+      }
+      QPushButton#annotationToolButton:checked {
+        background: rgba(240, 182, 79, 50);
+        border-color: #b27a17;
+        color: #b27a17;
       }
       QWidget#brandBox { background: transparent; }
       QLabel#brandBadge {
@@ -2739,6 +3643,8 @@ private:
   QFrame *titleBar_ = nullptr;
   QFrame *header_ = nullptr;
   QFrame *footer_ = nullptr;
+  QFrame *annotationToolbar_ = nullptr;
+  QButtonGroup *annotationGroup_ = nullptr;
   QLineEdit *symbol_ = nullptr;
   QComboBox *interval_ = nullptr;
   QComboBox *higher_ = nullptr;
@@ -2747,6 +3653,7 @@ private:
   QPushButton *backend_ = nullptr;
   QPushButton *wsLogButton_ = nullptr;
   QPushButton *updateButton_ = nullptr;
+  QPushButton *magnetButton_ = nullptr;
   QPushButton *theme_ = nullptr;
   QPushButton *refresh_ = nullptr;
   QPushButton *minimize_ = nullptr;
