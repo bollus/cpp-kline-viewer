@@ -593,7 +593,7 @@ private:
     engine.globalObject().setProperty("close", candleSeries(engine, candles, [](const Candle &c, int) { return c.close; }));
     engine.globalObject().setProperty("time", candleSeries(engine, candles, [](const Candle &c, int) { return static_cast<double>(c.ms); }));
     engine.globalObject().setProperty("bar_index", candleSeries(engine, candles, [](const Candle &, int i) { return static_cast<double>(i); }));
-    engine.globalObject().setProperty("last_bar_index", candles.isEmpty() ? -1 : candles.size() - 1);
+    engine.globalObject().setProperty("last_bar_index", QJSValue(candles.isEmpty() ? -1 : static_cast<int>(candles.size()) - 1));
     const QString prelude = R"JS(
       const input = {
         int: (value, label = "", min = -2147483648, max = 2147483647) => __api.inputInt(value, label, min, max),
