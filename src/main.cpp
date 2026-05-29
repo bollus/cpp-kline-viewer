@@ -273,6 +273,8 @@ signals:
   void annotationToolChanged(AnnotationTool tool);
 
 protected:
+  bool showPositionContextMenu(const QPointF &pos, const QPoint &globalPos);
+
   void keyPressEvent(QKeyEvent *event) override {
     if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
       deleteSelectedAnnotation();
@@ -1815,7 +1817,11 @@ private:
   struct PositionHitbox {
     QRectF rect;
     QString direction;
+    qint64 startMs = 0;
+    qint64 endMs = 0;
     double entry = std::numeric_limits<double>::quiet_NaN();
+    double sl = std::numeric_limits<double>::quiet_NaN();
+    double oneRtp = std::numeric_limits<double>::quiet_NaN();
     double tp1R = std::numeric_limits<double>::quiet_NaN();
     double tp2R = std::numeric_limits<double>::quiet_NaN();
     double pnl = std::numeric_limits<double>::quiet_NaN();
@@ -1842,7 +1848,14 @@ private:
     PositionHitbox hitbox;
     hitbox.rect = rect.adjusted(-2, -2, 2, 2);
     hitbox.direction = position.direction;
+    hitbox.startMs = position.entryTime;
+    hitbox.endMs = end;
     hitbox.entry = entry;
+    hitbox.sl = sl;
+    if (std::isfinite(sl)) {
+      const double risk = std::abs(entry - sl);
+      if (risk > 0) hitbox.oneRtp = position.direction == "LONG" ? entry + risk : entry - risk;
+    }
     hitbox.tp1R = std::isfinite(tp1) && risk > 0 ? std::abs(tp1 - entry) / risk : std::numeric_limits<double>::quiet_NaN();
     hitbox.tp2R = std::isfinite(exitPrice) && risk > 0 ? std::abs(exitPrice - entry) / risk : std::numeric_limits<double>::quiet_NaN();
     hitbox.pnl = position.totalPnl;
@@ -1858,6 +1871,40 @@ private:
       if (positionHitboxes_[i].rect.contains(point)) return i;
     }
     return -1;
+  }
+
+  QString jsonNumber(double value) const {
+    return std::isfinite(value) ? QString::number(value, 'g', 15) : "null";
+  }
+
+  QString positionCopyJson(const PositionHitbox &hitbox) const {
+    QStringList candleLines;
+    for (const Candle &candle : candles_) {
+      if (candle.ms < hitbox.startMs || candle.ms > hitbox.endMs) continue;
+      candleLines << QString(
+        "        {\n"
+        "            \"o\": %1,\n"
+        "            \"h\": %2,\n"
+        "            \"l\": %3,\n"
+        "            \"c\": %4\n"
+        "        }"
+      ).arg(jsonNumber(candle.open), jsonNumber(candle.high), jsonNumber(candle.low), jsonNumber(candle.close));
+    }
+    return QString(
+      "{\n"
+      "    \"entry\": %1,\n"
+      "    \"sl\": %2,\n"
+      "    \"1r_tp\": %3,\n"
+      "    \"kline\": [\n"
+      "%4\n"
+      "    ]\n"
+      "}"
+    ).arg(
+      jsonNumber(hitbox.entry),
+      jsonNumber(hitbox.sl),
+      jsonNumber(hitbox.oneRtp),
+      candleLines.join(",\n")
+    );
   }
 
   bool toggleLayerAt(const QPointF &point) {
@@ -2051,6 +2098,19 @@ private:
   QSpinBox *lineWidthSpin_ = nullptr;
   bool syncingStyleToolbar_ = false;
 };
+
+bool ChartWidget::showPositionContextMenu(const QPointF &pos, const QPoint &globalPos) {
+  const int index = positionHitboxAt(pos);
+  if (index < 0 || index >= positionHitboxes_.size()) return false;
+  QMenu menu;
+  QAction *copy = menu.addAction("复制区块信息");
+  QAction *chosen = menu.exec(globalPos);
+  if (chosen == copy) {
+    QApplication::clipboard()->setText(positionCopyJson(positionHitboxes_[index]));
+    QToolTip::showText(globalPos, "已复制区块信息", this);
+  }
+  return true;
+}
 
 class CandleClient : public QObject {
   Q_OBJECT
