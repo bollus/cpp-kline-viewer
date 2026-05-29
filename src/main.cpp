@@ -595,28 +595,28 @@ private:
     engine.globalObject().setProperty("bar_index", candleSeries(engine, candles, [](const Candle &, int i) { return static_cast<double>(i); }));
     engine.globalObject().setProperty("last_bar_index", QJSValue(candles.isEmpty() ? -1 : static_cast<int>(candles.size()) - 1));
     const QString prelude = R"JS(
-      globalThis.input = {
+      var input = {
         int: (value, label = "", min = -2147483648, max = 2147483647) => __api.inputInt(value, label, min, max),
         float: (value, label = "", min = -Number.MAX_VALUE, max = Number.MAX_VALUE) => __api.inputFloat(value, label, min, max),
         bool: (value, label = "") => __api.inputBool(value, label)
       };
-      globalThis.location = { abovebar: "abovebar", belowbar: "belowbar", absolute: "absolute" };
-      globalThis.indicator = (name, options = {}) => __api.indicator(name, options);
-      globalThis.plot = (series, options = {}) => __api.plot(series, options);
-      globalThis.plotshape = (conditions, options = {}) => __api.plotshape(conditions, options);
-      globalThis.box = (options = {}) => __api.box(options);
-      globalThis.line = (options = {}) => __api.line(options);
-      globalThis.label = (options = {}) => __api.label(options);
-      globalThis.ref = (series, barsBack = 1) => {
+      var location = { abovebar: "abovebar", belowbar: "belowbar", absolute: "absolute" };
+      var indicator = (name, options = {}) => __api.indicator(name, options);
+      var plot = (series, options = {}) => __api.plot(series, options);
+      var plotshape = (conditions, options = {}) => __api.plotshape(conditions, options);
+      var box = (options = {}) => __api.box(options);
+      var line = (options = {}) => __api.line(options);
+      var label = (options = {}) => __api.label(options);
+      var ref = (series, barsBack = 1) => {
         const out = new Array(series.length).fill(null);
         for (let i = barsBack; i < series.length; i++) out[i] = series[i - barsBack];
         return out;
       };
-      globalThis.nz = (series, value = 0) => {
+      var nz = (series, value = 0) => {
         if (Array.isArray(series)) return series.map(v => Number.isFinite(v) ? v : value);
         return Number.isFinite(series) ? series : value;
       };
-      globalThis.console = { log: (value) => __api.log(String(value)) };
+      var console = { log: (value) => __api.log(String(value)) };
     )JS";
     QJSValue preludeResult = engine.evaluate(prelude, "indicator-runtime.js");
     if (preludeResult.isError()) {
@@ -747,9 +747,7 @@ public:
     lineNumberArea_ = new LineNumberArea(this);
     connect(this, &QPlainTextEdit::blockCountChanged, this, [this] { updateLineNumberAreaWidth(); });
     connect(this, &QPlainTextEdit::updateRequest, this, &CodeEditor::updateLineNumberArea);
-    connect(this, &QPlainTextEdit::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
     updateLineNumberAreaWidth();
-    highlightCurrentLine();
   }
 
   void applyComfortableLineSpacing() {
@@ -808,19 +806,6 @@ private:
     if (dy) lineNumberArea_->scroll(0, dy);
     else lineNumberArea_->update(0, rect.y(), lineNumberArea_->width(), rect.height());
     if (rect.contains(viewport()->rect())) updateLineNumberAreaWidth();
-  }
-
-  void highlightCurrentLine() {
-    QList<QTextEdit::ExtraSelection> selections;
-    if (!isReadOnly()) {
-      QTextEdit::ExtraSelection selection;
-      selection.format.setBackground(palette().color(QPalette::Highlight).lighter(175));
-      selection.format.setProperty(QTextFormat::FullWidthSelection, true);
-      selection.cursor = textCursor();
-      selection.cursor.clearSelection();
-      selections.append(selection);
-    }
-    setExtraSelections(selections);
   }
 
   QWidget *lineNumberArea_ = nullptr;
@@ -4203,6 +4188,61 @@ private:
     return target;
   }
 
+  QString formatIndicatorCode(const QString &code) const {
+    QString normalized = code;
+    normalized.replace("\r\n", "\n").replace('\r', '\n');
+    QStringList lines = normalized.split('\n');
+    QStringList out;
+    int indent = 0;
+    bool previousBlank = false;
+
+    auto startsWithClosing = [](const QString &line) {
+      return line.startsWith('}') || line.startsWith(")") || line.startsWith("]");
+    };
+
+    auto countOutsideStrings = [](const QString &line, QChar target) {
+      int count = 0;
+      bool single = false;
+      bool dbl = false;
+      bool tpl = false;
+      bool escaped = false;
+      for (int i = 0; i < line.size(); ++i) {
+        const QChar ch = line[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch == '\\') {
+          escaped = true;
+          continue;
+        }
+        if (!dbl && !tpl && ch == '\'') single = !single;
+        else if (!single && !tpl && ch == '"') dbl = !dbl;
+        else if (!single && !dbl && ch == '`') tpl = !tpl;
+        else if (!single && !dbl && !tpl && ch == target) ++count;
+      }
+      return count;
+    };
+
+    for (QString line : lines) {
+      line = line.trimmed();
+      if (line.isEmpty()) {
+        if (!previousBlank && !out.isEmpty()) out << "";
+        previousBlank = true;
+        continue;
+      }
+      previousBlank = false;
+      if (startsWithClosing(line)) indent = std::max(0, indent - 1);
+      out << QString(indent * 2, ' ') + line;
+      const int opens = countOutsideStrings(line, '{') + countOutsideStrings(line, '(') + countOutsideStrings(line, '[');
+      const int closes = countOutsideStrings(line, '}') + countOutsideStrings(line, ')') + countOutsideStrings(line, ']');
+      indent = std::max(0, indent + opens - closes);
+    }
+
+    while (!out.isEmpty() && out.last().isEmpty()) out.removeLast();
+    return out.join('\n') + '\n';
+  }
+
   QString newIndicatorTemplate() const {
     return R"JS(indicator("Custom Indicator", { overlay: true })
 
@@ -4291,7 +4331,7 @@ plotshape(marks, {
     QFont codeFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     codeFont.setPointSize(11);
     editor->setFont(codeFont);
-    editor->setPlainText(initialCode);
+    editor->setPlainText(formatIndicatorCode(initialCode));
     editor->applyComfortableLineSpacing();
     new JsSyntaxHighlighter(editor->document());
     editor->setTabStopDistance(QFontMetricsF(codeFont).horizontalAdvance(' ') * 2);
@@ -4304,14 +4344,17 @@ plotshape(marks, {
       pathPreview->setText(QString("保存文件：%1\n文件名根据 indicator(\"名称\") 自动生成。").arg(resolvedIndicatorSavePath(editor->toPlainText(), originalPath)));
     };
     auto save = [this, &dialog, editor, originalPath] {
-      const QString target = resolvedIndicatorSavePath(editor->toPlainText(), originalPath);
+      const QString formatted = formatIndicatorCode(editor->toPlainText());
+      editor->setPlainText(formatted);
+      editor->applyComfortableLineSpacing();
+      const QString target = resolvedIndicatorSavePath(formatted, originalPath);
       if (target.isEmpty()) return;
       QFile file(target);
       if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         QMessageBox::warning(&dialog, "保存失败", QString("无法写入：%1").arg(target));
         return;
       }
-      file.write(editor->toPlainText().toUtf8());
+      file.write(formatted.toUtf8());
       file.close();
       if (!originalPath.isEmpty() && QFileInfo(originalPath).absoluteFilePath() != QFileInfo(target).absoluteFilePath()) {
         QFile::remove(originalPath);
