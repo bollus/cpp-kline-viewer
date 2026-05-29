@@ -37,11 +37,14 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
+          $appVersion = "${{ github.ref_name }}"
+          if ($appVersion.StartsWith("v")) { $appVersion = $appVersion.Substring(1) }
           cmake -S . -B build `
             -G "Visual Studio 17 2022" `
             -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -DQ4J_UPDATE_REPO="${{ github.repository }}"
+            -DQ4J_UPDATE_REPO="${{ github.repository }}" `
+            -DQ4J_APP_VERSION="$appVersion"
 
       - name: Build
         run: cmake --build build --config Release
@@ -59,11 +62,9 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $content = Get-Content CMakeLists.txt -Raw
-          if ($content -notmatch 'project\(q4j_kline_viewer\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)') {
-            throw "Cannot read project version from CMakeLists.txt"
-          }
-          "version=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          $appVersion = "${{ github.ref_name }}"
+          if ($appVersion.StartsWith("v")) { $appVersion = $appVersion.Substring(1) }
+          "version=$appVersion" >> $env:GITHUB_OUTPUT
 
       - name: Build installer
         shell: pwsh

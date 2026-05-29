@@ -31,7 +31,12 @@ jobs:
           cache: true
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQ4J_UPDATE_REPO="${{ github.repository }}"
+        run: |
+          APP_VERSION="${GITHUB_REF_NAME#v}"
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQ4J_UPDATE_REPO="${{ github.repository }}" \
+            -DQ4J_APP_VERSION="${APP_VERSION}"
 
       - name: Build
         run: cmake --build build --config Release
