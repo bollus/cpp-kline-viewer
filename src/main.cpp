@@ -652,6 +652,190 @@ private:
   QStringList errors_;
 };
 
+class CodeEditor;
+
+class JsSyntaxHighlighter : public QSyntaxHighlighter {
+public:
+  explicit JsSyntaxHighlighter(QTextDocument *parent = nullptr) : QSyntaxHighlighter(parent) {
+    auto format = [](const QColor &color, QFont::Weight weight = QFont::Normal, bool italic = false) {
+      QTextCharFormat f;
+      f.setForeground(color);
+      f.setFontWeight(weight);
+      f.setFontItalic(italic);
+      return f;
+    };
+
+    keywordFormat_ = format(QColor("#c792ea"), QFont::DemiBold);
+    apiFormat_ = format(QColor("#82aaff"), QFont::DemiBold);
+    stringFormat_ = format(QColor("#c3e88d"));
+    numberFormat_ = format(QColor("#f78c6c"));
+    commentFormat_ = format(QColor("#7c8796"), QFont::Normal, true);
+
+    const QStringList keywords{
+      "const", "let", "var", "function", "return", "if", "else", "for", "while",
+      "break", "continue", "true", "false", "null", "NaN", "Infinity", "new"
+    };
+    for (const QString &keyword : keywords) rules_.push_back({QRegularExpression(QString("\\b%1\\b").arg(keyword)), keywordFormat_});
+
+    const QStringList apis{
+      "indicator", "input", "plot", "plotshape", "box", "line", "label", "ta",
+      "open", "high", "low", "close", "time", "bar_index", "last_bar_index",
+      "location", "ref", "nz", "Math", "Number"
+    };
+    for (const QString &api : apis) rules_.push_back({QRegularExpression(QString("\\b%1\\b").arg(api)), apiFormat_});
+
+    rules_.push_back({QRegularExpression("\\b\\d+(?:\\.\\d+)?\\b"), numberFormat_});
+    rules_.push_back({QRegularExpression("\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\""), stringFormat_});
+    rules_.push_back({QRegularExpression("'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'"), stringFormat_});
+    rules_.push_back({QRegularExpression("`[^`\\\\]*(?:\\\\.[^`\\\\]*)*`"), stringFormat_});
+    rules_.push_back({QRegularExpression("//[^\\n]*"), commentFormat_});
+  }
+
+protected:
+  void highlightBlock(const QString &text) override {
+    for (const Rule &rule : rules_) {
+      QRegularExpressionMatchIterator it = rule.pattern.globalMatch(text);
+      while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        setFormat(match.capturedStart(), match.capturedLength(), rule.format);
+      }
+    }
+
+    setCurrentBlockState(0);
+    int start = previousBlockState() == 1 ? 0 : text.indexOf("/*");
+    while (start >= 0) {
+      const int end = text.indexOf("*/", start + 2);
+      const int length = end < 0 ? text.length() - start : end - start + 2;
+      setFormat(start, length, commentFormat_);
+      if (end < 0) {
+        setCurrentBlockState(1);
+        break;
+      }
+      start = text.indexOf("/*", start + length);
+    }
+  }
+
+private:
+  struct Rule {
+    QRegularExpression pattern;
+    QTextCharFormat format;
+  };
+
+  QVector<Rule> rules_;
+  QTextCharFormat keywordFormat_;
+  QTextCharFormat apiFormat_;
+  QTextCharFormat stringFormat_;
+  QTextCharFormat numberFormat_;
+  QTextCharFormat commentFormat_;
+};
+
+class LineNumberArea : public QWidget {
+public:
+  explicit LineNumberArea(CodeEditor *editor);
+  QSize sizeHint() const override;
+
+protected:
+  void paintEvent(QPaintEvent *event) override;
+
+private:
+  CodeEditor *editor_ = nullptr;
+};
+
+class CodeEditor : public QPlainTextEdit {
+public:
+  explicit CodeEditor(QWidget *parent = nullptr) : QPlainTextEdit(parent) {
+    lineNumberArea_ = new LineNumberArea(this);
+    connect(this, &QPlainTextEdit::blockCountChanged, this, [this] { updateLineNumberAreaWidth(); });
+    connect(this, &QPlainTextEdit::updateRequest, this, &CodeEditor::updateLineNumberArea);
+    connect(this, &QPlainTextEdit::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
+    updateLineNumberAreaWidth();
+    highlightCurrentLine();
+  }
+
+  void applyComfortableLineSpacing() {
+    QTextCursor cursor(document());
+    cursor.select(QTextCursor::Document);
+    QTextBlockFormat format;
+    format.setLineHeight(132, QTextBlockFormat::ProportionalHeight);
+    cursor.mergeBlockFormat(format);
+  }
+
+  int lineNumberAreaWidth() const {
+    int digits = 1;
+    int max = std::max(1, blockCount());
+    while (max >= 10) {
+      max /= 10;
+      ++digits;
+    }
+    return 12 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+  }
+
+  void lineNumberAreaPaintEvent(QPaintEvent *event) {
+    QPainter painter(lineNumberArea_);
+    painter.fillRect(event->rect(), palette().color(QPalette::Window).darker(108));
+
+    QTextBlock block = firstVisibleBlock();
+    int blockNumber = block.blockNumber();
+    int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+    int bottom = top + qRound(blockBoundingRect(block).height());
+
+    painter.setFont(font());
+    painter.setPen(palette().color(QPalette::PlaceholderText));
+    while (block.isValid() && top <= event->rect().bottom()) {
+      if (block.isVisible() && bottom >= event->rect().top()) {
+        painter.drawText(0, top, lineNumberArea_->width() - 6, fontMetrics().height(), Qt::AlignRight, QString::number(blockNumber + 1));
+      }
+      block = block.next();
+      top = bottom;
+      bottom = top + qRound(blockBoundingRect(block).height());
+      ++blockNumber;
+    }
+  }
+
+protected:
+  void resizeEvent(QResizeEvent *event) override {
+    QPlainTextEdit::resizeEvent(event);
+    const QRect cr = contentsRect();
+    lineNumberArea_->setGeometry(QRect(cr.left(), cr.top(), lineNumberAreaWidth(), cr.height()));
+  }
+
+private:
+  void updateLineNumberAreaWidth() {
+    setViewportMargins(lineNumberAreaWidth(), 0, 0, 0);
+  }
+
+  void updateLineNumberArea(const QRect &rect, int dy) {
+    if (dy) lineNumberArea_->scroll(0, dy);
+    else lineNumberArea_->update(0, rect.y(), lineNumberArea_->width(), rect.height());
+    if (rect.contains(viewport()->rect())) updateLineNumberAreaWidth();
+  }
+
+  void highlightCurrentLine() {
+    QList<QTextEdit::ExtraSelection> selections;
+    if (!isReadOnly()) {
+      QTextEdit::ExtraSelection selection;
+      selection.format.setBackground(palette().color(QPalette::Highlight).lighter(175));
+      selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+      selection.cursor = textCursor();
+      selection.cursor.clearSelection();
+      selections.append(selection);
+    }
+    setExtraSelections(selections);
+  }
+
+  QWidget *lineNumberArea_ = nullptr;
+};
+
+LineNumberArea::LineNumberArea(CodeEditor *editor) : QWidget(editor), editor_(editor) {}
+
+QSize LineNumberArea::sizeHint() const {
+  return QSize(editor_ ? editor_->lineNumberAreaWidth() : 0, 0);
+}
+
+void LineNumberArea::paintEvent(QPaintEvent *event) {
+  if (editor_) editor_->lineNumberAreaPaintEvent(event);
+}
+
 static QString envOrDefault(const char *name, const QString &fallback) {
   const QByteArray value = qgetenv(name);
   return value.isEmpty() ? fallback : QString::fromUtf8(value);
@@ -3971,10 +4155,21 @@ private:
 
   QString sanitizedIndicatorBaseName(QString value) const {
     value = value.trimmed().toLower();
-    value.replace(QRegularExpression("[^a-z0-9_\\-]+"), "-");
-    while (value.startsWith('-') || value.startsWith('_')) value.remove(0, 1);
-    while (value.endsWith('-') || value.endsWith('_')) value.chop(1);
-    return value.isEmpty() ? "custom-indicator" : value;
+    QString sanitized;
+    bool previousDash = false;
+    for (const QChar ch : value) {
+      if (ch.isLetterOrNumber()) {
+        sanitized.append(ch);
+        previousDash = false;
+      } else if (ch == '_' || ch == '-' || ch.isSpace()) {
+        if (!previousDash && !sanitized.isEmpty()) {
+          sanitized.append('-');
+          previousDash = true;
+        }
+      }
+    }
+    while (sanitized.endsWith('-') || sanitized.endsWith('_')) sanitized.chop(1);
+    return sanitized.isEmpty() ? "custom-indicator" : sanitized;
   }
 
   QString uniqueIndicatorPath(const QString &baseName) const {
@@ -3988,10 +4183,24 @@ private:
     return path;
   }
 
-  QString indicatorPathFromEditorName(const QString &text) const {
-    QString name = text.trimmed();
-    if (name.endsWith(".js", Qt::CaseInsensitive)) name.chop(3);
-    return QDir(chart_->indicatorScriptDirectory()).filePath(sanitizedIndicatorBaseName(name) + ".js");
+  QString indicatorNameFromCode(const QString &code) const {
+    const QRegularExpression pattern("indicator\\s*\\(\\s*([\"'`])([^\"'`]+)\\1");
+    const QRegularExpressionMatch match = pattern.match(code);
+    return match.hasMatch() ? match.captured(2).trimmed() : "Custom Indicator";
+  }
+
+  QString indicatorPathFromCode(const QString &code) const {
+    return QDir(chart_->indicatorScriptDirectory()).filePath(sanitizedIndicatorBaseName(indicatorNameFromCode(code)) + ".js");
+  }
+
+  QString resolvedIndicatorSavePath(const QString &code, const QString &originalPath) const {
+    const QString target = indicatorPathFromCode(code);
+    const QString originalAbs = QFileInfo(originalPath).absoluteFilePath();
+    const QString targetAbs = QFileInfo(target).absoluteFilePath();
+    if (QFileInfo::exists(target) && targetAbs != originalAbs) {
+      return uniqueIndicatorPath(QFileInfo(target).baseName());
+    }
+    return target;
   }
 
   QString newIndicatorTemplate() const {
@@ -4065,6 +4274,7 @@ plotshape(marks, {
   }
 
   void openIndicatorEditor(const QString &originalPath, const QString &savePath, const QString &initialCode, const QString &title) {
+    Q_UNUSED(savePath);
     QDialog dialog(this);
     dialog.setWindowTitle(title);
     dialog.setMinimumSize(820, 640);
@@ -4072,31 +4282,30 @@ plotshape(marks, {
     layout->setContentsMargins(18, 16, 18, 16);
     layout->setSpacing(10);
 
-    auto *form = new QFormLayout;
-    form->setSpacing(10);
-    auto *fileName = new QLineEdit(QFileInfo(savePath).fileName());
-    fileName->setMinimumHeight(32);
-    form->addRow("文件名", fileName);
-    layout->addLayout(form);
+    auto *pathPreview = new QLabel;
+    pathPreview->setWordWrap(true);
+    layout->addWidget(pathPreview);
 
-    auto *editor = new QPlainTextEdit;
+    auto *editor = new CodeEditor;
     editor->setObjectName("debugLog");
-    editor->setPlainText(initialCode);
     QFont codeFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    codeFont.setPointSize(10);
+    codeFont.setPointSize(11);
     editor->setFont(codeFont);
+    editor->setPlainText(initialCode);
+    editor->applyComfortableLineSpacing();
+    new JsSyntaxHighlighter(editor->document());
     editor->setTabStopDistance(QFontMetricsF(codeFont).horizontalAdvance(' ') * 2);
     layout->addWidget(editor, 1);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Save);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    connect(buttons->button(QDialogButtonBox::Save), &QPushButton::clicked, &dialog, [this, &dialog, fileName, editor, originalPath] {
-      const QString target = indicatorPathFromEditorName(fileName->text());
+    auto updatePreview = [this, pathPreview, editor, originalPath] {
+      pathPreview->setText(QString("保存文件：%1\n文件名根据 indicator(\"名称\") 自动生成。").arg(resolvedIndicatorSavePath(editor->toPlainText(), originalPath)));
+    };
+    auto save = [this, &dialog, editor, originalPath] {
+      const QString target = resolvedIndicatorSavePath(editor->toPlainText(), originalPath);
       if (target.isEmpty()) return;
-      if (QFileInfo::exists(target) && QFileInfo(target).canonicalFilePath() != QFileInfo(originalPath).canonicalFilePath()) {
-        if (QMessageBox::question(&dialog, "覆盖指标", "同名指标已存在，是否覆盖？") != QMessageBox::Yes) return;
-      }
       QFile file(target);
       if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         QMessageBox::warning(&dialog, "保存失败", QString("无法写入：%1").arg(target));
@@ -4104,12 +4313,17 @@ plotshape(marks, {
       }
       file.write(editor->toPlainText().toUtf8());
       file.close();
-      if (!originalPath.isEmpty() && QFileInfo(originalPath).canonicalFilePath() != QFileInfo(target).canonicalFilePath()) {
+      if (!originalPath.isEmpty() && QFileInfo(originalPath).absoluteFilePath() != QFileInfo(target).absoluteFilePath()) {
         QFile::remove(originalPath);
       }
       dialog.accept();
       reloadIndicatorsFromDisk();
-    });
+    };
+    connect(editor, &QPlainTextEdit::textChanged, &dialog, updatePreview);
+    connect(buttons->button(QDialogButtonBox::Save), &QPushButton::clicked, &dialog, save);
+    auto *saveShortcut = new QShortcut(QKeySequence::Save, &dialog);
+    connect(saveShortcut, &QShortcut::activated, &dialog, save);
+    updatePreview();
     dialog.exec();
   }
 
