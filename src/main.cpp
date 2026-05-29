@@ -3648,6 +3648,8 @@ private:
     interval_->addItems({"1M", "2M", "3M", "5M", "10M", "15M", "30M", "1H", "4H", "1D"});
     settings_ = new QPushButton("策略设置");
     settings_->setObjectName("toolButton");
+    indicators_ = new QPushButton("指标");
+    indicators_->setObjectName("toolButton");
     backend_ = new QPushButton("服务端设置");
     backend_->setObjectName("toolButton");
     wsLogButton_ = new QPushButton("WS日志");
@@ -3663,6 +3665,7 @@ private:
     symbol_->setFixedWidth(132);
     interval_->setFixedWidth(73);
     settings_->setFixedWidth(75);
+    indicators_->setFixedWidth(52);
     backend_->setFixedWidth(88);
     wsLogButton_->setFixedWidth(68);
     updateButton_->setFixedWidth(76);
@@ -3672,6 +3675,7 @@ private:
     headerLayout->addWidget(symbol_);
     headerLayout->addWidget(interval_);
     headerLayout->addWidget(settings_);
+    headerLayout->addWidget(indicators_);
     headerLayout->addWidget(backend_);
     headerLayout->addWidget(wsLogButton_);
     headerLayout->addWidget(updateButton_);
@@ -3710,6 +3714,7 @@ private:
     layout->addWidget(footer);
 
     buildSettingsDialog();
+    buildIndicatorDialog();
     buildBackendDialog();
     buildDebugDialog();
   }
@@ -3736,7 +3741,7 @@ private:
   void buildSettingsDialog() {
     settingsDialog_ = new QDialog(this);
     settingsDialog_->setWindowTitle("策略设置");
-    settingsDialog_->setMinimumSize(560, 520);
+    settingsDialog_->setMinimumSize(420, 330);
     auto *layout = new QFormLayout(settingsDialog_);
     layout->setContentsMargins(22, 20, 22, 18);
     layout->setSpacing(14);
@@ -3765,9 +3770,26 @@ private:
     layout->addRow("FVG Circle", fvgCircleEnabled_);
     layout->addRow("Left / Right N", fvgCircleN_);
     layout->addRow("Min gap ticks", fvgCircleMinGapTicks_);
+    layout->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, settingsDialog_, &QDialog::reject);
+    connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] {
+      chart_->setFvgCircleSettings(fvgCircleEnabled_->isChecked(), fvgCircleN_->value(), fvgCircleMinGapTicks_->value());
+      saveIndicatorSettings();
+      settingsDialog_->accept();
+      refresh();
+    });
+  }
+
+  void buildIndicatorDialog() {
+    indicatorDialog_ = new QDialog(this);
+    indicatorDialog_->setWindowTitle("自定义指标");
+    indicatorDialog_->setMinimumSize(620, 520);
+    auto *layout = new QVBoxLayout(indicatorDialog_);
+    layout->setContentsMargins(22, 20, 22, 18);
+    layout->setSpacing(14);
     auto *customTitle = new QLabel("自定义 JS 指标");
     customTitle->setObjectName("sectionLabel");
-    layout->addRow(customTitle);
+    layout->addWidget(customTitle);
     customIndicatorList_ = new QWidget;
     customIndicatorList_->setObjectName("customIndicatorList");
     customIndicatorLayout_ = new QVBoxLayout(customIndicatorList_);
@@ -3777,9 +3799,8 @@ private:
     customIndicatorScroll->setWidgetResizable(true);
     customIndicatorScroll->setFrameShape(QFrame::NoFrame);
     customIndicatorScroll->setMinimumHeight(140);
-    customIndicatorScroll->setMaximumHeight(220);
     customIndicatorScroll->setWidget(customIndicatorList_);
-    layout->addRow(customIndicatorScroll);
+    layout->addWidget(customIndicatorScroll, 1);
     auto *customButtons = new QWidget;
     auto *customButtonsLayout = new QHBoxLayout(customButtons);
     customButtonsLayout->setContentsMargins(0, 0, 0, 0);
@@ -3791,12 +3812,15 @@ private:
     customButtonsLayout->addWidget(openIndicators);
     customButtonsLayout->addWidget(reloadIndicators);
     customButtonsLayout->addStretch(1);
-    layout->addRow(customButtons);
+    layout->addWidget(customButtons);
     indicatorErrorText_ = new QPlainTextEdit;
     indicatorErrorText_->setObjectName("debugLog");
     indicatorErrorText_->setReadOnly(true);
-    indicatorErrorText_->setMaximumHeight(92);
-    layout->addRow("脚本错误", indicatorErrorText_);
+    indicatorErrorText_->setMaximumHeight(110);
+    auto *errorLabel = new QLabel("脚本错误");
+    errorLabel->setObjectName("sectionLabel");
+    layout->addWidget(errorLabel);
+    layout->addWidget(indicatorErrorText_);
     connect(openIndicators, &QPushButton::clicked, this, [this] {
       QDesktopServices::openUrl(QUrl::fromLocalFile(chart_->indicatorScriptDirectory()));
     });
@@ -3806,14 +3830,9 @@ private:
       rebuildCustomIndicatorList();
     });
     rebuildCustomIndicatorList();
-    layout->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, settingsDialog_, &QDialog::reject);
-    connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] {
-      chart_->setFvgCircleSettings(fvgCircleEnabled_->isChecked(), fvgCircleN_->value(), fvgCircleMinGapTicks_->value());
-      saveIndicatorSettings();
-      settingsDialog_->accept();
-      refresh();
-    });
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, indicatorDialog_, &QDialog::hide);
   }
 
   void rebuildCustomIndicatorList() {
@@ -4044,10 +4063,11 @@ private:
       dark_ = !dark_;
       applyTheme();
     });
-    connect(settings_, &QPushButton::clicked, this, [this] {
+    connect(settings_, &QPushButton::clicked, settingsDialog_, &QDialog::show);
+    connect(indicators_, &QPushButton::clicked, this, [this] {
       rebuildCustomIndicatorList();
       updateIndicatorErrorText();
-      settingsDialog_->show();
+      indicatorDialog_->show();
     });
     connect(&client_, &CandleClient::candlesLoaded, chart_, &ChartWidget::setCandles);
     connect(&client_, &CandleClient::candlesLoaded, this, [this] {
@@ -4703,6 +4723,7 @@ private:
   QComboBox *higher_ = nullptr;
   QComboBox *lower_ = nullptr;
   QPushButton *settings_ = nullptr;
+  QPushButton *indicators_ = nullptr;
   QPushButton *backend_ = nullptr;
   QPushButton *wsLogButton_ = nullptr;
   QPushButton *updateButton_ = nullptr;
@@ -4717,6 +4738,7 @@ private:
   QLabel *range_ = nullptr;
   QLabel *events_ = nullptr;
   QDialog *settingsDialog_ = nullptr;
+  QDialog *indicatorDialog_ = nullptr;
   QDialog *backendDialog_ = nullptr;
   QDialog *debugDialog_ = nullptr;
   QPlainTextEdit *debugLog_ = nullptr;
