@@ -11,7 +11,12 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets OpenGLWidgets)
 
 set(Q4J_UPDATE_REPO "" CACHE STRING "GitHub repository used by the in-app updater, for example owner/repo")
 set(Q4J_APP_VERSION "${PROJECT_VERSION}" CACHE STRING "Application version shown in the app and embedded in packages")
-string(REPLACE "." "," Q4J_APP_VERSION_COMMA "${Q4J_APP_VERSION}.0")
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" Q4J_APP_VERSION_MATCH "${Q4J_APP_VERSION}")
+if(Q4J_APP_VERSION_MATCH)
+  set(Q4J_APP_VERSION_RC "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},0")
+else()
+  set(Q4J_APP_VERSION_RC "1,0,0,0")
+endif()
 
 if(WIN32)
   configure_file(
