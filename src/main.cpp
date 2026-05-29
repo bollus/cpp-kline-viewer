@@ -2609,11 +2609,20 @@ private:
 
     QUrl downloadUrl;
     const QJsonArray assets = release.value("assets").toArray();
+#ifdef Q_OS_WIN
+    QUrl fallbackExeUrl;
+#endif
     for (const QJsonValue &value : assets) {
       const QJsonObject asset = value.toObject();
       const QString name = asset.value("name").toString().toLower();
 #ifdef Q_OS_WIN
-      const bool matches = name.endsWith(".exe");
+      const QUrl assetUrl(asset.value("browser_download_url").toString());
+      if (name.endsWith(".exe") && (name.contains("setup") || name.contains("installer"))) {
+        downloadUrl = assetUrl;
+        break;
+      }
+      if (fallbackExeUrl.isEmpty() && name.endsWith(".exe")) fallbackExeUrl = assetUrl;
+      const bool matches = false;
 #elif defined(Q_OS_MACOS)
       const bool matches = name.endsWith(".dmg");
 #else
@@ -2624,6 +2633,9 @@ private:
         break;
       }
     }
+#ifdef Q_OS_WIN
+    if (downloadUrl.isEmpty()) downloadUrl = fallbackExeUrl;
+#endif
     if (downloadUrl.isEmpty()) downloadUrl = QUrl(release.value("html_url").toString());
     if (downloadUrl.isEmpty()) {
       QMessageBox::warning(this, "检查更新", QString("发现新版本 %1，但没有找到可下载文件。").arg(latest));

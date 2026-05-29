@@ -19,59 +19,20 @@ env:
 jobs:
   windows:
     runs-on: windows-latest
-    env:
-      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-      VCPKG_DEFAULT_TRIPLET: "x64-windows-static-release"
-      VCPKG_FEATURE_FLAGS: "binarycaching"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Free disk space
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          Get-PSDrive C | Format-Table -AutoSize
-          $paths = @(
-            $env:ANDROID_HOME,
-            $env:ANDROID_SDK_ROOT,
-            "C:\Android",
-            "C:\ghcup",
-            "C:\hostedtoolcache\windows\CodeQL"
-          ) | Where-Object { $_ -and (Test-Path $_) }
-          foreach ($path in $paths) {
-            Write-Host "Removing $path"
-            Remove-Item -Recurse -Force $path
-          }
-          Get-PSDrive C | Format-Table -AutoSize
-
-      - name: Cache vcpkg artifacts
-        id: cache-vcpkg
-        uses: actions/cache@v4
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
         with:
-          path: |
-            C:\vcpkg\installed
-            C:\vcpkg\downloads
-            ${{ github.workspace }}/vcpkg_installed
-            ${{ github.workspace }}/build/vcpkg_installed
-            ${{ env.LOCALAPPDATA }}\vcpkg\archives
-          key: windows-static-qt-v2-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'triplets/**', '.github/workflows/windows-cpp-kline-viewer.yml') }}
-          restore-keys: |
-            windows-static-qt-v2-${{ runner.os }}-
+          version: "6.6.3"
+          modules: "qtwebsockets"
+          cache: true
 
-      - name: Install static Qt
-        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+      - name: Install Inno Setup
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          vcpkg install `
-            qtbase `
-            qtwebsockets `
-            --triplet x64-windows-static-release `
-            --overlay-triplets=triplets `
-            --x-buildtrees-root="$env:RUNNER_TEMP\vcpkg-buildtrees" `
-            --x-packages-root="$env:RUNNER_TEMP\vcpkg-packages" `
-            --clean-after-build
+        run: choco install innosetup --no-progress -y
 
       - name: Configure
         shell: pwsh
@@ -80,45 +41,77 @@ jobs:
             -G "Visual Studio 17 2022" `
             -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
-            -DVCPKG_OVERLAY_TRIPLETS="triplets" `
-            -DQ4J_UPDATE_REPO="${{ github.repository }}" `
-            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>"
+            -DQ4J_UPDATE_REPO="${{ github.repository }}"
 
       - name: Build
         run: cmake --build build --config Release
 
-      - name: List package output
-        shell: pwsh
-        run: |
-          Get-ChildItem -Recurse build/Release | Select-Object FullName, Length
-          Get-FileHash build/Release/q4j_kline_viewer.exe -Algorithm SHA256
-
-      - name: Scan exe with Microsoft Defender
+      - name: Deploy Qt runtime
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Resolve-Path build/Release/q4j_kline_viewer.exe
-          Update-MpSignature
-          Start-MpScan -ScanPath $exe -ScanType CustomScan
-          if (!(Test-Path $exe)) {
-            throw "Microsoft Defender removed or quarantined the exe"
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item build/Release/q4j_kline_viewer.exe package/ -Force
+          windeployqt --release --compiler-runtime --no-translations package/q4j_kline_viewer.exe
+          Copy-Item fonts package/fonts -Recurse -Force
+
+      - name: Get app version
+        id: version
+        shell: pwsh
+        run: |
+          $content = Get-Content CMakeLists.txt -Raw
+          if ($content -notmatch 'project\(q4j_kline_viewer\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+            throw "Cannot read project version from CMakeLists.txt"
           }
-          $threats = Get-MpThreatDetection | Where-Object { $_.Resources -contains $exe.Path }
+          "version=$($Matches[1])" >> $env:GITHUB_OUTPUT
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force build/installer | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            installer/q4j-kline-viewer.iss `
+            /DMyAppVersion="${{ steps.version.outputs.version }}" `
+            /DSourceDir="$pwd\package"
+
+      - name: List package output
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse package | Select-Object FullName, Length
+          Get-ChildItem -Recurse build/installer | Select-Object FullName, Length
+          Get-FileHash build/installer/q4j-kline-viewer-windows-setup.exe -Algorithm SHA256
+
+      - name: Scan package with Microsoft Defender
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Update-MpSignature
+          Start-MpScan -ScanPath (Resolve-Path package) -ScanType CustomScan
+
+      - name: Scan installer with Microsoft Defender
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Resolve-Path build/installer/q4j-kline-viewer-windows-setup.exe
+          Start-MpScan -ScanPath $installer -ScanType CustomScan
+          if (!(Test-Path $installer)) {
+            throw "Microsoft Defender removed or quarantined the installer"
+          }
+          $threats = Get-MpThreatDetection | Where-Object { $_.Resources -contains $installer.Path }
           if ($threats) {
             $threats | Format-List *
-            throw "Microsoft Defender detected the exe"
+            throw "Microsoft Defender detected the installer"
           }
 
-      - name: Upload Windows exe
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: q4j-kline-viewer-windows-exe
-          path: build/Release/q4j_kline_viewer.exe
+          name: q4j-kline-viewer-windows-installer
+          path: build/installer/q4j-kline-viewer-windows-setup.exe
 
-      - name: Upload exe to release
+      - name: Upload installer to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/Release/q4j_kline_viewer.exe
+          files: build/installer/q4j-kline-viewer-windows-setup.exe
