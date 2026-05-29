@@ -107,6 +107,16 @@ static QString loadBundledFonts() {
   return preferredFamily.isEmpty() ? "Chiron GoRound TC" : preferredFamily;
 }
 
+static QString systemUiFontFamily() {
+#ifdef Q_OS_WIN
+  return "Microsoft YaHei UI";
+#elif defined(Q_OS_MACOS)
+  return "PingFang SC";
+#else
+  return "Noto Sans CJK SC";
+#endif
+}
+
 class ChartWidget : public QOpenGLWidget {
   Q_OBJECT
 
@@ -156,6 +166,7 @@ public:
   void setOverlayEvents(const QJsonArray &events) {
     overlayEvents_ = events;
     parsedOverlayEvents_.clear();
+    rangeEndByKey_.clear();
     for (const QJsonValue &value : overlayEvents_) {
       const QJsonObject event = value.toObject();
       parsedOverlayEvents_.push_back({event, parsePayload(event)});
@@ -163,6 +174,15 @@ public:
     std::sort(parsedOverlayEvents_.begin(), parsedOverlayEvents_.end(), [this](const ParsedOverlayEvent &a, const ParsedOverlayEvent &b) {
       return jsonMs(a.event.value("eventTime")) < jsonMs(b.event.value("eventTime"));
     });
+    for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+      if (parsed.event.value("eventType").toString() != "RANGE_BOUNDARY_ENDED") continue;
+      const QJsonObject payload = parsed.payload;
+      const QString key = rangeKey(payload.value("side").toString(), jsonMs(payload.value("start_time")));
+      const qint64 end = jsonMs(payload.value("end_time"));
+      if (key.isEmpty() || end <= 0) continue;
+      const qint64 previous = rangeEndByKey_.value(key, 0);
+      if (previous <= 0 || end < previous) rangeEndByKey_.insert(key, end);
+    }
     update();
   }
 
@@ -223,6 +243,7 @@ protected:
   void paintEvent(QPaintEvent *) override {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, false);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
     paintBackground(p);
     if (candles_.isEmpty() && !messageText_.isEmpty()) {
       paintChartMessage(p);
@@ -404,6 +425,29 @@ private:
   QColor up() const { return QColor("#20c997"); }
   QColor down() const { return QColor("#ef5f78"); }
 
+  QFont uiFont(int pixelSize, QFont::Weight weight = QFont::Normal) const {
+    QFont f = font();
+    f.setPixelSize(pixelSize);
+    f.setWeight(weight);
+    f.setStyleStrategy(static_cast<QFont::StyleStrategy>(QFont::PreferAntialias | QFont::PreferQuality));
+    return f;
+  }
+
+  QFont numberFont(int pixelSize, QFont::Weight weight = QFont::Medium) const {
+    QFont f;
+#ifdef Q_OS_WIN
+    f.setFamilies({"Cascadia Mono", "Consolas", "Microsoft YaHei UI"});
+#elif defined(Q_OS_MACOS)
+    f.setFamilies({"SF Mono", "Menlo", "PingFang SC"});
+#else
+    f.setFamilies({"Noto Sans Mono CJK SC", "DejaVu Sans Mono", "Noto Sans CJK SC"});
+#endif
+    f.setPixelSize(pixelSize);
+    f.setWeight(weight);
+    f.setStyleStrategy(static_cast<QFont::StyleStrategy>(QFont::PreferAntialias | QFont::PreferQuality));
+    return f;
+  }
+
   void visibleRange(double &minPrice, double &maxPrice) const {
     minPrice = std::numeric_limits<double>::max();
     maxPrice = std::numeric_limits<double>::lowest();
@@ -461,17 +505,11 @@ private:
     p.setBrush(dark_ ? QColor(14, 19, 17, 226) : QColor(255, 253, 247, 238));
     p.drawRect(box);
 
-    QFont title = font();
-    title.setPixelSize(14);
-    title.setWeight(QFont::Black);
-    p.setFont(title);
+    p.setFont(uiFont(14, QFont::DemiBold));
     p.setPen(QColor("#ef5f78"));
     p.drawText(box.adjusted(18, 16, -18, 0), Qt::AlignLeft | Qt::AlignTop, "数据加载失败");
 
-    QFont body = font();
-    body.setPixelSize(12);
-    body.setWeight(QFont::DemiBold);
-    p.setFont(body);
+    p.setFont(uiFont(12, QFont::Medium));
     p.setPen(text());
     p.drawText(box.adjusted(18, 46, -18, -16), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, messageText_);
   }
@@ -479,10 +517,7 @@ private:
   void paintGrid(QPainter &p, double minPrice, double maxPrice) {
     const QRectF r = plotRect();
     p.setPen(QPen(grid(), 1));
-    QFont axisFont = font();
-    axisFont.setPixelSize(12);
-    axisFont.setWeight(QFont::DemiBold);
-    p.setFont(axisFont);
+    p.setFont(numberFont(12, QFont::Medium));
     const int yTicks = 10;
     for (int i = 0; i <= yTicks; ++i) {
       const double y = r.top() + r.height() * i / yTicks;
@@ -590,10 +625,7 @@ private:
     if (parsedOverlayEvents_.isEmpty() || candles_.isEmpty()) return;
     p.save();
     p.setClipRect(plotRect());
-    QFont label = font();
-    label.setPixelSize(10);
-    label.setWeight(QFont::DemiBold);
-    p.setFont(label);
+    p.setFont(uiFont(10, QFont::Medium));
 
     for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
       const QJsonObject event = parsed.event;
@@ -677,6 +709,20 @@ private:
     return static_cast<qint64>(value.toDouble());
   }
 
+  QString rangeKey(const QString &side, qint64 start) const {
+    if (side.isEmpty() || start <= 0) return {};
+    return side + ":" + QString::number(start);
+  }
+
+  bool timeWindowVisible(qint64 start, qint64 end) const {
+    if (candles_.isEmpty() || start <= 0 || end <= 0) return false;
+    const double a = indexForTime(start);
+    const double b = indexForTime(end);
+    const double left = std::min(a, b);
+    const double right = std::max(a, b);
+    return right >= visibleStart_ - 2.0 && left <= visibleStart_ + visibleCount_ + 2.0;
+  }
+
   void drawRangeEvent(QPainter &p, const QJsonObject &payload, double minPrice, double maxPrice) {
     const QJsonObject point = payload.value("point").toObject();
     const double price = point.value("price").toDouble(std::numeric_limits<double>::quiet_NaN());
@@ -685,6 +731,8 @@ private:
     const qint64 logicalStart = jsonMs(point.value("time"));
     const qint64 start = jsonMs(point.value("display_time").isUndefined() ? point.value("time") : point.value("display_time"));
     const qint64 end = rangeEndMs(side, logicalStart);
+    if (!timeWindowVisible(start, end)) return;
+    if (price < minPrice || price > maxPrice) return;
     const QPointF a = pointAtTime(start, price, minPrice, maxPrice);
     const QPointF b = pointAtTime(end, price, minPrice, maxPrice);
     const QColor color = side == "HIGH" ? QColor(245, 158, 11, 199) : QColor(56, 189, 248, 199);
@@ -695,16 +743,7 @@ private:
   }
 
   qint64 rangeEndMs(const QString &side, qint64 start) const {
-    qint64 end = 0;
-    for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
-      const QJsonObject event = parsed.event;
-      if (event.value("eventType").toString() != "RANGE_BOUNDARY_ENDED") continue;
-      const QJsonObject payload = parsed.payload;
-      if (payload.value("side").toString() != side) continue;
-      if (jsonMs(payload.value("start_time")) != start) continue;
-      const qint64 candidate = jsonMs(payload.value("end_time"));
-      if (candidate > 0 && (end == 0 || candidate < end)) end = candidate;
-    }
+    const qint64 end = rangeEndByKey_.value(rangeKey(side, start), 0);
     if (end > 0) return end;
     const qint64 base = candles_.isEmpty() ? start : candles_.last().ms;
     return base + 10 * barIntervalMs();
@@ -991,9 +1030,7 @@ private:
 
   void drawBadgeMarker(QPainter &p, qint64 time, double price, bool below, const QColor &color, const QString &label, double minPrice, double maxPrice) {
     const QPointF anchor = pointAtTime(time, price, minPrice, maxPrice);
-    QFont f = font();
-    f.setPixelSize(10);
-    f.setWeight(QFont::Black);
+    QFont f = uiFont(10, QFont::DemiBold);
     p.setFont(f);
     const QFontMetrics fm(f);
     const QSize textSize = fm.size(Qt::TextSingleLine, label);
@@ -1059,10 +1096,7 @@ private:
   }
 
   void paintLayerHints(QPainter &p) {
-    QFont f = font();
-    f.setPixelSize(12);
-    f.setWeight(QFont::DemiBold);
-    p.setFont(f);
+    p.setFont(uiFont(12, QFont::Medium));
     int y = 28;
     auto row = [&](bool visible, const QString &name) {
       p.setPen(visible ? text() : QColor(muted().red(), muted().green(), muted().blue(), 115));
@@ -1183,10 +1217,7 @@ private:
     p.setBrush(color);
     p.drawRect(rect);
     p.setPen(QColor("#111813"));
-    QFont f = font();
-    f.setPixelSize(11);
-    f.setWeight(QFont::DemiBold);
-    p.setFont(f);
+    p.setFont(uiFont(11, QFont::Medium));
     p.drawText(rect, Qt::AlignCenter, text);
   }
 
@@ -1209,10 +1240,7 @@ private:
     p.setBrush(dark_ ? QColor(12, 17, 15, 235) : QColor(255, 253, 247, 238));
     p.drawRect(panel);
 
-    QFont head = font();
-    head.setPixelSize(11);
-    head.setWeight(QFont::Black);
-    p.setFont(head);
+    p.setFont(uiFont(11, QFont::DemiBold));
     const QColor sideColor = hitbox.direction == "LONG" ? up() : down();
     QRectF side(panel.left() + 12, panel.top() + 10, 56, 22);
     p.setPen(QPen(sideColor, 1));
@@ -1224,10 +1252,7 @@ private:
     p.setPen(QPen(dark_ ? QColor(230, 226, 211, 36) : QColor(23, 31, 27, 36), 1));
     p.drawLine(QPointF(panel.left() + 12, panel.top() + 42), QPointF(panel.right() - 12, panel.top() + 42));
 
-    QFont body = font();
-    body.setPixelSize(10);
-    body.setWeight(QFont::DemiBold);
-    p.setFont(body);
+    p.setFont(uiFont(10, QFont::Medium));
     const QStringList labels{"Background", "Signal", "Entry", "TP1 R", "TP2 R", "PNL"};
     const QStringList values{
       formatBackground(hitbox),
@@ -1256,10 +1281,7 @@ private:
     p.setBrush(dark_ ? QColor(14, 19, 17, 178) : QColor(255, 253, 247, 210));
     p.drawRect(panel);
 
-    QFont label = font();
-    label.setPixelSize(11);
-    label.setWeight(QFont::Black);
-    p.setFont(label);
+    p.setFont(uiFont(11, QFont::DemiBold));
     p.setPen(QColor("#f0b64f"));
     p.drawText(panel.adjusted(8, 8, 0, 0), "OHLC 示意图");
 
@@ -1274,10 +1296,7 @@ private:
     p.fillRect(body, color);
     p.drawRect(body);
 
-    QFont nums = font();
-    nums.setPixelSize(12);
-    nums.setWeight(QFont::DemiBold);
-    p.setFont(nums);
+    p.setFont(numberFont(12, QFont::Medium));
     p.setPen(muted());
     p.drawText(QPointF(panel.left() + 10, green ? bodyBottom + 3 : bodyTop + 3), QString("O %1").arg(c.open));
     p.setPen(color);
@@ -1295,6 +1314,7 @@ private:
     QJsonObject payload;
   };
   QVector<ParsedOverlayEvent> parsedOverlayEvents_;
+  QHash<QString, qint64> rangeEndByKey_;
   QString messageText_;
   bool dark_ = true;
   bool rangeVisible_ = true;
@@ -2211,7 +2231,7 @@ private:
 
   QString darkCss() const {
     return R"(
-      QWidget { background: #080c0b; color: #f4efe3; font-family: "Chiron GoRound TC", "Microsoft YaHei UI", "PingFang SC"; font-size: 13px; }
+      QWidget { background: #080c0b; color: #f4efe3; font-family: "Microsoft YaHei UI", "Segoe UI", "PingFang SC", "Noto Sans CJK SC"; font-size: 13px; }
       QMainWindow { background: #080c0b; }
       QWidget#appShell {
         background: #080c0b;
@@ -2235,7 +2255,7 @@ private:
         background: transparent;
         color: #f4efe3;
         font-size: 14px;
-        font-weight: 600;
+        font-weight: 500;
       }
       QPushButton#windowButton, QPushButton#closeButton {
         min-height: 24px; max-height: 24px;
@@ -2245,7 +2265,7 @@ private:
         padding: 0;
         color: #a7b0a8;
         font-size: 15px;
-        font-weight: 600;
+        font-weight: 500;
       }
       QPushButton#windowButton:hover { background: rgba(230, 226, 211, 22); border-color: rgba(230, 226, 211, 44); color: #f4efe3; }
       QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
@@ -2281,7 +2301,7 @@ private:
         background: transparent;
         color: #f4efe3;
         font-size: 18px;
-        font-weight: 600;
+        font-weight: 500;
       }
       QLineEdit, QComboBox, QPushButton {
         min-height: 30px; max-height: 30px;
@@ -2291,7 +2311,7 @@ private:
         padding: 0 8px;
         font-weight: 500;
       }
-      QLineEdit#symbolInput { font-size: 14px; font-weight: 600; }
+      QLineEdit#symbolInput { font-size: 14px; font-weight: 500; }
       QLineEdit#symbolInput {
         min-height: 28px; max-height: 28px;
         background: #111815;
@@ -2331,7 +2351,7 @@ private:
         padding: 0 9px;
         color: #d9d4c7;
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 500;
       }
       QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
         background: #18211d;
@@ -2363,7 +2383,7 @@ private:
         background: transparent;
         color: #a7b0a8;
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 500;
         qproperty-alignment: AlignCenter;
       }
       QFrame#footer QLabel {
@@ -2371,9 +2391,24 @@ private:
         font-size: 13px;
         font-weight: 500;
       }
-      QDialog QLabel, QDialog QCheckBox {
+      QDialog QWidget {
+        background: transparent;
+      }
+      QDialog QLabel, QDialog QCheckBox, QDialog QDialogButtonBox {
+        background: transparent;
         font-size: 13px;
-        font-weight: 500;
+        font-weight: 400;
+      }
+      QDialog QLineEdit, QDialog QComboBox {
+        background: #151d19;
+        border: 1px solid rgba(230, 226, 211, 48);
+        color: #f4efe3;
+      }
+      QDialog QPlainTextEdit {
+        background: #0a0f0d;
+        border: 1px solid rgba(230, 226, 211, 42);
+        color: #f4efe3;
+        font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
       }
       QDialog {
         background: #0e1311;
@@ -2384,7 +2419,7 @@ private:
 
   QString lightCss() const {
     return R"(
-      QWidget { background: #eef0eb; color: #131916; font-family: "Chiron GoRound TC", "Microsoft YaHei UI", "PingFang SC"; font-size: 13px; }
+      QWidget { background: #eef0eb; color: #131916; font-family: "Microsoft YaHei UI", "Segoe UI", "PingFang SC", "Noto Sans CJK SC"; font-size: 13px; }
       QMainWindow { background: #eef0eb; }
       QWidget#appShell {
         background: #eef0eb;
@@ -2408,7 +2443,7 @@ private:
         background: transparent;
         color: #131916;
         font-size: 14px;
-        font-weight: 600;
+        font-weight: 500;
       }
       QPushButton#windowButton, QPushButton#closeButton {
         min-height: 24px; max-height: 24px;
@@ -2418,7 +2453,7 @@ private:
         padding: 0;
         color: #59635d;
         font-size: 15px;
-        font-weight: 600;
+        font-weight: 500;
       }
       QPushButton#windowButton:hover { background: rgba(23, 31, 27, 22); border-color: rgba(23, 31, 27, 44); color: #131916; }
       QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
@@ -2454,7 +2489,7 @@ private:
         background: transparent;
         color: #131916;
         font-size: 18px;
-        font-weight: 600;
+        font-weight: 500;
       }
       QLineEdit, QComboBox, QPushButton {
         min-height: 30px; max-height: 30px;
@@ -2464,7 +2499,7 @@ private:
         padding: 0 8px;
         font-weight: 500;
       }
-      QLineEdit#symbolInput { font-size: 14px; font-weight: 600; }
+      QLineEdit#symbolInput { font-size: 14px; font-weight: 500; }
       QLineEdit#symbolInput {
         min-height: 28px; max-height: 28px;
         background: #fffdf7;
@@ -2504,7 +2539,7 @@ private:
         padding: 0 9px;
         color: #3b443e;
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 500;
       }
       QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
         background: #ffffff;
@@ -2536,7 +2571,7 @@ private:
         background: transparent;
         color: #59635d;
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 500;
         qproperty-alignment: AlignCenter;
       }
       QFrame#footer QLabel {
@@ -2544,9 +2579,24 @@ private:
         font-size: 13px;
         font-weight: 500;
       }
-      QDialog QLabel, QDialog QCheckBox {
+      QDialog QWidget {
+        background: transparent;
+      }
+      QDialog QLabel, QDialog QCheckBox, QDialog QDialogButtonBox {
+        background: transparent;
         font-size: 13px;
-        font-weight: 500;
+        font-weight: 400;
+      }
+      QDialog QLineEdit, QDialog QComboBox {
+        background: #ffffff;
+        border: 1px solid rgba(23, 31, 27, 42);
+        color: #131916;
+      }
+      QDialog QPlainTextEdit {
+        background: #ffffff;
+        border: 1px solid rgba(23, 31, 27, 34);
+        color: #131916;
+        font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
       }
       QDialog {
         background: #fffdf7;
@@ -2705,10 +2755,12 @@ private:
 
 int main(int argc, char **argv) {
   QApplication app(argc, argv);
-  const QString appFontFamily = loadBundledFonts();
+  loadBundledFonts();
+  const QString appFontFamily = systemUiFontFamily();
   QFont appFont(appFontFamily);
-  appFont.setPixelSize(13);
+  appFont.setPointSize(10);
   appFont.setWeight(QFont::Normal);
+  appFont.setStyleStrategy(static_cast<QFont::StyleStrategy>(QFont::PreferAntialias | QFont::PreferQuality));
   app.setFont(appFont);
   MainWindow window;
   window.show();
