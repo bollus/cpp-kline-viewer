@@ -1388,6 +1388,7 @@ public:
   QString backendBase() const { return backendBase_; }
   QString wsBase() const { return wsBase_; }
   bool realtimeEnabled() const { return realtimeEnabled_; }
+  bool hasConfiguredBackend() const { return !backendBase_.trimmed().isEmpty(); }
 
   void configureBackend(const QString &backendBase, const QString &wsBase, bool realtimeEnabled) {
     backendBase_ = normalizeBase(backendBase.trimmed());
@@ -1726,7 +1727,11 @@ public:
     buildUi();
     bindSignals();
     applyTheme();
-    if (showBackendDialog(true)) {
+    loadBackendSettings();
+    if (client_.hasConfiguredBackend()) {
+      refresh();
+    } else if (showBackendDialog(true)) {
+      saveBackendSettings();
       refresh();
     } else {
       status_->setText("○ 后端未配置");
@@ -2132,9 +2137,28 @@ private:
         continue;
       }
       client_.configureBackend(backend, wsUrl_->text(), realtime_->isChecked());
+      saveBackendSettings();
       if (!startup) refresh();
       return true;
     }
+  }
+
+  void loadBackendSettings() {
+    QSettings settings("Q4J", "KLineViewer");
+    const QString backend = settings.value("backend/http").toString().trimmed();
+    if (backend.isEmpty()) return;
+    client_.configureBackend(
+      backend,
+      settings.value("backend/ws").toString(),
+      settings.value("backend/realtime", true).toBool()
+    );
+  }
+
+  void saveBackendSettings() const {
+    QSettings settings("Q4J", "KLineViewer");
+    settings.setValue("backend/http", client_.backendBase());
+    settings.setValue("backend/ws", client_.wsBase());
+    settings.setValue("backend/realtime", client_.realtimeEnabled());
   }
 
   void bindSignals() {
