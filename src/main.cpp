@@ -950,6 +950,12 @@ public:
     update();
   }
 
+  void setTimeZoneId(const QByteArray &id) {
+    const QTimeZone zone(id);
+    timeZoneId_ = zone.isValid() ? id : QTimeZone::systemTimeZoneId();
+    update();
+  }
+
   void setCandles(QVector<Candle> candles) {
     candles_ = std::move(candles);
     if (!candles_.isEmpty()) messageText_.clear();
@@ -1503,7 +1509,7 @@ private:
       p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
       const int candleIndex = static_cast<int>(std::round(visibleStart_ + (visibleCount_ - 1) * i / 8.0));
       if (candleIndex >= 0 && candleIndex < candleCount()) {
-        const QString label = QDateTime::fromMSecsSinceEpoch(candles_[candleIndex].ms).toString("MM-dd HH:mm");
+        const QString label = formatChartTime(candles_[candleIndex].ms, "MM-dd HH:mm");
         p.setPen(muted());
         p.drawText(QRectF(x - 48, r.bottom() + 8, 96, 18), Qt::AlignCenter, label);
         p.setPen(QPen(grid(), 1));
@@ -2360,6 +2366,12 @@ private:
     return static_cast<qint64>(value.toDouble());
   }
 
+  QString formatChartTime(qint64 ms, const QString &format) const {
+    QTimeZone zone(timeZoneId_);
+    if (!zone.isValid()) zone = QTimeZone::systemTimeZone();
+    return QDateTime::fromMSecsSinceEpoch(ms, zone).toString(format);
+  }
+
   QString rangeKey(const QString &side, qint64 start) const {
     if (side.isEmpty() || start <= 0) return {};
     return side + ":" + QString::number(start);
@@ -2933,7 +2945,7 @@ private:
     if (hasMouse_ && r.contains(mousePos_)) {
       p.drawLine(QPointF(r.left(), mousePos_.y()), QPointF(r.right(), mousePos_.y()));
       drawAxisTag(p, QRectF(r.right() + 6, mousePos_.y() - 9, 66, 18), QString::number(priceForY(mousePos_.y(), minPrice, maxPrice), 'f', 2), QColor("#f0b64f"));
-      const QString time = QDateTime::fromMSecsSinceEpoch(candles_[hoveredIndex_].ms).toString("MM-dd HH:mm");
+      const QString time = formatChartTime(candles_[hoveredIndex_].ms, "MM-dd HH:mm");
       drawAxisTag(p, QRectF(x - 48, r.bottom() + 6, 96, 18), time, QColor("#f0b64f"));
     }
   }
@@ -3048,6 +3060,7 @@ private:
   QHash<QString, qint64> rangeEndByKey_;
   IndicatorEngine indicatorEngine_;
   QString messageText_;
+  QByteArray timeZoneId_ = QTimeZone::systemTimeZoneId();
   bool dark_ = true;
   bool rangeVisible_ = true;
   bool nVisible_ = true;
@@ -3495,6 +3508,7 @@ public:
     applyTheme();
     loadBackendSettings();
     loadIndicatorSettings();
+    loadDisplaySettings();
     if (client_.hasConfiguredBackend()) {
       refresh();
     } else if (showBackendDialog(true)) {
@@ -3959,10 +3973,13 @@ private:
     layout->setSpacing(14);
     higher_ = new QComboBox;
     lower_ = new QComboBox;
+    timeZone_ = new QComboBox;
     higher_->setMinimumHeight(34);
     lower_->setMinimumHeight(34);
+    timeZone_->setMinimumHeight(34);
     higher_->addItems({"15m", "30m", "1h", "4h"});
     lower_->addItems({"1m", "2m", "3m", "5m", "10m", "15m"});
+    populateTimeZones();
     fvgCircleEnabled_ = new QCheckBox("显示 FVG Circle");
     fvgCircleEnabled_->setChecked(chart_->fvgCircleSettings().enabled);
     fvgCircleN_ = new QSpinBox;
@@ -3976,6 +3993,7 @@ private:
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Apply);
     layout->addRow("高周期", higher_);
     layout->addRow("低周期", lower_);
+    layout->addRow("X轴时区", timeZone_);
     auto *indicatorTitle = new QLabel("内置指标");
     indicatorTitle->setObjectName("sectionLabel");
     layout->addRow(indicatorTitle);
@@ -3985,6 +4003,8 @@ private:
     layout->addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, settingsDialog_, &QDialog::reject);
     connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] {
+      applyTimeZoneSetting();
+      saveDisplaySettings();
       chart_->setFvgCircleSettings(fvgCircleEnabled_->isChecked(), fvgCircleN_->value(), fvgCircleMinGapTicks_->value());
       saveIndicatorSettings();
       settingsDialog_->accept();
@@ -4510,6 +4530,68 @@ plotshape(marks, {
     settings.setValue("backend/realtime", client_.realtimeEnabled());
   }
 
+  void populateTimeZones() {
+    if (!timeZone_) return;
+    timeZone_->clear();
+    QList<QByteArray> ids = QTimeZone::availableTimeZoneIds();
+    std::sort(ids.begin(), ids.end());
+    const QByteArray systemId = QTimeZone::systemTimeZoneId();
+    timeZone_->addItem(QString("System (%1)").arg(QString::fromUtf8(systemId)), systemId);
+    timeZone_->addItem("UTC", QByteArray("UTC"));
+    for (const QByteArray &id : ids) {
+      if (id == "UTC" || id == systemId) continue;
+      timeZone_->addItem(QString::fromUtf8(id), id);
+    }
+  }
+
+  QByteArray selectedTimeZoneId() const {
+    if (!timeZone_) return QTimeZone::systemTimeZoneId();
+    const QByteArray id = timeZone_->currentData().toByteArray();
+    return QTimeZone(id).isValid() ? id : QTimeZone::systemTimeZoneId();
+  }
+
+  void setSelectedTimeZoneId(const QByteArray &id) {
+    if (!timeZone_) return;
+    const QByteArray validId = QTimeZone(id).isValid() ? id : QTimeZone::systemTimeZoneId();
+    const int index = timeZone_->findData(validId);
+    if (index >= 0) timeZone_->setCurrentIndex(index);
+  }
+
+  QString formatDisplayTime(qint64 ms, const QString &format) const {
+    QTimeZone zone(timeZoneId_);
+    if (!zone.isValid()) zone = QTimeZone::systemTimeZone();
+    return QDateTime::fromMSecsSinceEpoch(ms, zone).toString(format);
+  }
+
+  void applyTimeZoneSetting() {
+    timeZoneId_ = selectedTimeZoneId();
+    chart_->setTimeZoneId(timeZoneId_);
+    updateVisibleRangeLabel();
+  }
+
+  void loadDisplaySettings() {
+    QSettings settings("Q4J", "KLineViewer");
+    timeZoneId_ = settings.value("display/timeZone", QTimeZone::systemTimeZoneId()).toByteArray();
+    if (!QTimeZone(timeZoneId_).isValid()) timeZoneId_ = QTimeZone::systemTimeZoneId();
+    setSelectedTimeZoneId(timeZoneId_);
+    chart_->setTimeZoneId(timeZoneId_);
+  }
+
+  void saveDisplaySettings() const {
+    QSettings settings("Q4J", "KLineViewer");
+    settings.setValue("display/timeZone", timeZoneId_);
+  }
+
+  void updateVisibleRangeLabel() {
+    if (lastRangeStartMs_ <= 0 || lastRangeEndMs_ <= 0 || lastRangeFirstIndex_ < 0 || lastRangeLastIndex_ < 0) {
+      range_->setText("Visible Range --");
+      return;
+    }
+    const QString start = formatDisplayTime(lastRangeStartMs_, "yyyy-MM-dd HH:mm");
+    const QString end = formatDisplayTime(lastRangeEndMs_, "yyyy-MM-dd HH:mm");
+    range_->setText(QString("Visible Range  %1 → %2  [%3-%4]").arg(start, end).arg(lastRangeFirstIndex_).arg(lastRangeLastIndex_));
+  }
+
   void loadIndicatorSettings() {
     QSettings settings("Q4J", "KLineViewer");
     const FvgCircleSettings current = chart_->fvgCircleSettings();
@@ -4625,13 +4707,15 @@ plotshape(marks, {
     connect(chart_, &ChartWidget::olderCandlesRequested, &client_, &CandleClient::loadOlder);
     connect(chart_, &ChartWidget::overlayRangeChanged, &client_, &CandleClient::loadOverlayRange);
     connect(chart_, &ChartWidget::visibleRangeChanged, this, [this](qint64 startMs, qint64 endMs, int firstIndex, int lastIndex) {
+      lastRangeStartMs_ = startMs;
+      lastRangeEndMs_ = endMs;
+      lastRangeFirstIndex_ = firstIndex;
+      lastRangeLastIndex_ = lastIndex;
       if (startMs <= 0 || endMs <= 0 || firstIndex < 0 || lastIndex < 0) {
         range_->setText("Visible Range --");
         return;
       }
-      const QString start = QDateTime::fromMSecsSinceEpoch(startMs).toString("yyyy-MM-dd HH:mm");
-      const QString end = QDateTime::fromMSecsSinceEpoch(endMs).toString("yyyy-MM-dd HH:mm");
-      range_->setText(QString("Visible Range  %1 → %2  [%3-%4]").arg(start, end).arg(firstIndex).arg(lastIndex));
+      updateVisibleRangeLabel();
     });
     connect(&client_, &CandleClient::statusChanged, this, [this](const QString &status, bool live) {
       status_->setText((live ? "● " : "○ ") + status);
@@ -5280,6 +5364,10 @@ plotshape(marks, {
   void refresh() {
     events_->setText("Events --");
     range_->setText("Visible Range --");
+    lastRangeStartMs_ = 0;
+    lastRangeEndMs_ = 0;
+    lastRangeFirstIndex_ = -1;
+    lastRangeLastIndex_ = -1;
     chart_->clearMessage();
     chart_->setCandles({});
     chart_->setOverlayEvents({});
@@ -5296,6 +5384,7 @@ plotshape(marks, {
   QComboBox *interval_ = nullptr;
   QComboBox *higher_ = nullptr;
   QComboBox *lower_ = nullptr;
+  QComboBox *timeZone_ = nullptr;
   QPushButton *settings_ = nullptr;
   QPushButton *indicators_ = nullptr;
   QPushButton *backend_ = nullptr;
@@ -5327,6 +5416,11 @@ plotshape(marks, {
   QSpinBox *fvgCircleMinGapTicks_ = nullptr;
   QNetworkAccessManager updateNetwork_;
   CandleClient client_;
+  QByteArray timeZoneId_ = QTimeZone::systemTimeZoneId();
+  qint64 lastRangeStartMs_ = 0;
+  qint64 lastRangeEndMs_ = 0;
+  int lastRangeFirstIndex_ = -1;
+  int lastRangeLastIndex_ = -1;
   bool dark_ = true;
   bool windowDragging_ = false;
   bool resizingWindow_ = false;
