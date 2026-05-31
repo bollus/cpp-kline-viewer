@@ -35,6 +35,9 @@ struct IndicatorMarker {
   int index = -1;
   double price = std::numeric_limits<double>::quiet_NaN();
   QColor color = QColor("#409cff");
+  QString shape = "circle";
+  QString location = "abovebar";
+  double pixelOffset = 13.0;
 };
 
 struct FvgCircleSettings {
@@ -240,7 +243,11 @@ public:
     if (!candles_ || candles_->isEmpty() || flags.isEmpty()) return;
     const QString location = jsStringProperty(options, "location", "abovebar").toLower();
     const QString text = jsStringProperty(options, "text", "");
+    QString shape = jsStringProperty(options, "style", jsStringProperty(options, "shape", "circle")).toLower();
+    if (shape == "triangledown") shape = "triangle_down";
+    if (shape == "triangleup") shape = "triangle_up";
     const QColor color = jsColorProperty(options, "color", QColor("#409cff"));
+    const double offset = std::clamp(jsDoubleProperty(options, "offsetPx", jsDoubleProperty(options, "offset", 13.0)), 0.0, 80.0);
     const QVector<double> priceSeries = jsArrayToNumbers(options.property("price"));
     const int count = std::min(static_cast<int>(flags.size()), static_cast<int>(candles_->size()));
     for (int i = 0; i < count; ++i) {
@@ -249,7 +256,7 @@ public:
       if (location == "belowbar") price = candles_->at(i).low;
       else if (location == "absolute" && i < priceSeries.size()) price = priceSeries[i];
       else price = candles_->at(i).high;
-      output_->markers.push_back({output_->id, text.isEmpty() ? output_->name : text, i, price, color});
+      output_->markers.push_back({output_->id, text.isEmpty() ? output_->name : text, i, price, color, shape, location, offset});
     }
   }
 
@@ -559,7 +566,10 @@ private:
         "FVG Circle",
         center,
         candles[center].high,
-        QColor("#409cff")
+        QColor("#409cff"),
+        "circle",
+        "abovebar",
+        13.0
       });
     }
   }
@@ -1125,6 +1135,7 @@ signals:
   void visibleRangeChanged(qint64 startMs, qint64 endMs, int firstIndex, int lastIndex);
   void annotationToolChanged(AnnotationTool tool);
   void fvgCircleVisibilityChanged(bool enabled);
+  void customIndicatorVisibilityChanged(const QString &id, bool enabled);
 
 protected:
   bool showPositionContextMenu(const QPointF &pos, const QPoint &globalPos);
@@ -2258,12 +2269,23 @@ private:
     for (const IndicatorMarker &marker : markers) {
       if (marker.index < start || marker.index >= end || marker.index >= candleCount()) continue;
       if (!std::isfinite(marker.price)) continue;
-      const QPointF anchor = pointAtIndex(marker.index, marker.price, minPrice, maxPrice) + QPointF(0, -13);
+      const double direction = marker.location == "belowbar" ? 1.0 : -1.0;
+      const QPointF anchor = pointAtIndex(marker.index, marker.price, minPrice, maxPrice) + QPointF(0, direction * marker.pixelOffset);
       const QColor fill(marker.color.red(), marker.color.green(), marker.color.blue(), 230);
       const QColor border(147, 197, 253, 235);
-      p.setPen(QPen(border, 1.25));
+      p.setPen(QPen(marker.shape.startsWith("triangle") ? fill : border, 1.25));
       p.setBrush(fill);
-      p.drawEllipse(anchor, 4.4, 4.4);
+      if (marker.shape == "triangle_up") {
+        QPolygonF triangle;
+        triangle << QPointF(anchor.x(), anchor.y() - 6) << QPointF(anchor.x() - 6, anchor.y() + 5) << QPointF(anchor.x() + 6, anchor.y() + 5);
+        p.drawPolygon(triangle);
+      } else if (marker.shape == "triangle_down") {
+        QPolygonF triangle;
+        triangle << QPointF(anchor.x(), anchor.y() + 6) << QPointF(anchor.x() - 6, anchor.y() - 5) << QPointF(anchor.x() + 6, anchor.y() - 5);
+        p.drawPolygon(triangle);
+      } else {
+        p.drawEllipse(anchor, 4.4, 4.4);
+      }
     }
 
     p.setFont(uiFont(10, QFont::Medium));
@@ -2738,6 +2760,9 @@ private:
     row(ninVisible_, "N-IN / N-InverseK");
     row(ifvgVisible_, "iFVG");
     row(indicatorEngine_.fvgCircleSettings().enabled, "FVG Circle");
+    for (const IndicatorScript &script : indicatorEngine_.scripts()) {
+      row(script.enabled, script.name);
+    }
     row(orderVisible_, "持仓视图");
     row(markerVisible_, "订单标注");
   }
@@ -2858,7 +2883,9 @@ private:
   }
 
   bool toggleLayerAt(const QPointF &point) {
-    if (point.x() < 8 || point.x() > 210 || point.y() < 10 || point.y() > 180) return false;
+    const int customCount = indicatorEngine_.scripts().size();
+    const int totalRows = 7 + customCount;
+    if (point.x() < 8 || point.x() > 230 || point.y() < 10 || point.y() > 14 + totalRows * 24) return false;
     const int row = static_cast<int>((point.y() - 14) / 24);
     switch (row) {
       case 0: rangeVisible_ = !rangeVisible_; return true;
@@ -2873,9 +2900,25 @@ private:
         emit fvgCircleVisibilityChanged(settings.enabled);
         return true;
       }
-      case 5: orderVisible_ = !orderVisible_; return true;
-      case 6: markerVisible_ = !markerVisible_; return true;
-      default: return false;
+      default: {
+        const int scriptIndex = row - 5;
+        if (scriptIndex >= 0 && scriptIndex < indicatorEngine_.scripts().size()) {
+          const IndicatorScript script = indicatorEngine_.scripts()[scriptIndex];
+          indicatorEngine_.setScriptEnabled(script.id, !script.enabled);
+          rebuildIndicatorsNow();
+          emit customIndicatorVisibilityChanged(script.id, !script.enabled);
+          return true;
+        }
+        if (row == 5 + customCount) {
+          orderVisible_ = !orderVisible_;
+          return true;
+        }
+        if (row == 6 + customCount) {
+          markerVisible_ = !markerVisible_;
+          return true;
+        }
+        return false;
+      }
     }
   }
 
@@ -3952,50 +3995,65 @@ private:
   void buildIndicatorDialog() {
     indicatorDialog_ = new QDialog(this);
     indicatorDialog_->setWindowTitle("自定义指标");
-    indicatorDialog_->setMinimumSize(620, 520);
+    indicatorDialog_->setMinimumSize(820, 560);
     auto *layout = new QVBoxLayout(indicatorDialog_);
-    layout->setContentsMargins(22, 20, 22, 18);
-    layout->setSpacing(14);
-    auto *customTitle = new QLabel("自定义 JS 指标");
-    customTitle->setObjectName("sectionLabel");
-    layout->addWidget(customTitle);
-    customIndicatorList_ = new QWidget;
-    customIndicatorList_->setObjectName("customIndicatorList");
-    customIndicatorLayout_ = new QVBoxLayout(customIndicatorList_);
-    customIndicatorLayout_->setContentsMargins(0, 0, 0, 0);
-    customIndicatorLayout_->setSpacing(8);
-    auto *customIndicatorScroll = new QScrollArea;
-    customIndicatorScroll->setWidgetResizable(true);
-    customIndicatorScroll->setFrameShape(QFrame::NoFrame);
-    customIndicatorScroll->setMinimumHeight(140);
-    customIndicatorScroll->setWidget(customIndicatorList_);
-    layout->addWidget(customIndicatorScroll, 1);
-    auto *customButtons = new QWidget;
-    auto *customButtonsLayout = new QHBoxLayout(customButtons);
-    customButtonsLayout->setContentsMargins(0, 0, 0, 0);
-    customButtonsLayout->setSpacing(8);
-    auto *newIndicator = new QPushButton("新建指标");
+    layout->setContentsMargins(18, 16, 18, 16);
+    layout->setSpacing(12);
+
+    auto *topBar = new QWidget;
+    auto *topLayout = new QHBoxLayout(topBar);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(8);
+    auto *customTitle = new QLabel("自定义指标");
+    customTitle->setObjectName("dialogTitle");
+    auto *newIndicator = new QPushButton("新建");
     auto *copyBuiltinFvg = new QPushButton("复制内置 FVG");
     auto *openIndicators = new QPushButton("打开目录");
-    auto *reloadIndicators = new QPushButton("重载脚本");
+    auto *reloadIndicators = new QPushButton("重载");
     newIndicator->setObjectName("toolButton");
     copyBuiltinFvg->setObjectName("toolButton");
     openIndicators->setObjectName("toolButton");
     reloadIndicators->setObjectName("toolButton");
-    customButtonsLayout->addWidget(newIndicator);
-    customButtonsLayout->addWidget(copyBuiltinFvg);
-    customButtonsLayout->addWidget(openIndicators);
-    customButtonsLayout->addWidget(reloadIndicators);
-    customButtonsLayout->addStretch(1);
-    layout->addWidget(customButtons);
+    topLayout->addWidget(customTitle);
+    topLayout->addStretch(1);
+    topLayout->addWidget(newIndicator);
+    topLayout->addWidget(copyBuiltinFvg);
+    topLayout->addWidget(openIndicators);
+    topLayout->addWidget(reloadIndicators);
+    layout->addWidget(topBar);
+
+    auto *body = new QSplitter(Qt::Horizontal);
+    customIndicatorList_ = new QWidget;
+    customIndicatorList_->setObjectName("customIndicatorList");
+    customIndicatorLayout_ = new QVBoxLayout(customIndicatorList_);
+    customIndicatorLayout_->setContentsMargins(8, 8, 8, 8);
+    customIndicatorLayout_->setSpacing(6);
+    auto *customIndicatorScroll = new QScrollArea;
+    customIndicatorScroll->setWidgetResizable(true);
+    customIndicatorScroll->setFrameShape(QFrame::NoFrame);
+    customIndicatorScroll->setWidget(customIndicatorList_);
+    body->addWidget(customIndicatorScroll);
+
+    auto *sidePanel = new QWidget;
+    auto *sideLayout = new QVBoxLayout(sidePanel);
+    sideLayout->setContentsMargins(12, 10, 12, 10);
+    sideLayout->setSpacing(10);
     indicatorErrorText_ = new QPlainTextEdit;
     indicatorErrorText_->setObjectName("debugLog");
     indicatorErrorText_->setReadOnly(true);
-    indicatorErrorText_->setMaximumHeight(110);
+    indicatorErrorText_->setMinimumHeight(160);
     auto *errorLabel = new QLabel("脚本错误");
     errorLabel->setObjectName("sectionLabel");
-    layout->addWidget(errorLabel);
-    layout->addWidget(indicatorErrorText_);
+    auto *hint = new QLabel("指标参数显示在左侧列表中。图表左上角 Layers 也可以直接开关每个指标。");
+    hint->setWordWrap(true);
+    hint->setObjectName("mutedLabel");
+    sideLayout->addWidget(errorLabel);
+    sideLayout->addWidget(indicatorErrorText_, 1);
+    sideLayout->addWidget(hint);
+    body->addWidget(sidePanel);
+    body->setStretchFactor(0, 3);
+    body->setStretchFactor(1, 2);
+    layout->addWidget(body, 1);
     connect(newIndicator, &QPushButton::clicked, this, [this] {
       openIndicatorEditor({}, uniqueIndicatorPath("custom-indicator"), newIndicatorTemplate(), "新建指标");
     });
@@ -4036,8 +4094,9 @@ private:
     }
     for (const IndicatorScript &script : scripts) {
       auto *row = new QWidget;
+      row->setObjectName("indicatorRow");
       auto *rowLayout = new QHBoxLayout(row);
-      rowLayout->setContentsMargins(0, 0, 0, 0);
+      rowLayout->setContentsMargins(10, 8, 10, 8);
       rowLayout->setSpacing(8);
       auto *check = new QCheckBox(QString("%1  (%2)").arg(script.name, QFileInfo(script.path).fileName()));
       check->setChecked(script.enabled);
@@ -4075,8 +4134,9 @@ private:
       const QVector<IndicatorInput> inputs = chart_->customIndicatorInputs(script.id);
       if (!inputs.isEmpty()) {
         auto *formWidget = new QWidget;
+        formWidget->setObjectName("indicatorParams");
         auto *form = new QFormLayout(formWidget);
-        form->setContentsMargins(22, 0, 0, 2);
+        form->setContentsMargins(22, 0, 10, 10);
         form->setSpacing(7);
         for (const IndicatorInput &input : inputs) addIndicatorInputControl(form, script.id, input);
         customIndicatorLayout_->addWidget(formWidget);
@@ -4504,6 +4564,11 @@ plotshape(marks, {
       if (fvgCircleEnabled_ && fvgCircleEnabled_->isChecked() != enabled) fvgCircleEnabled_->setChecked(enabled);
       saveIndicatorSettings();
     });
+    connect(chart_, &ChartWidget::customIndicatorVisibilityChanged, this, [this](const QString &, bool) {
+      saveIndicatorSettings();
+      rebuildCustomIndicatorList();
+      updateIndicatorErrorText();
+    });
     connect(magnetButton_, &QPushButton::toggled, chart_, &ChartWidget::setMagnetEnabled);
     connect(backend_, &QPushButton::clicked, this, [this] {
       showBackendDialog(false);
@@ -4814,6 +4879,33 @@ plotshape(marks, {
         font-size: 13px;
         font-weight: 400;
       }
+      QDialog QLabel#dialogTitle {
+        color: #f4efe3;
+        font-size: 18px;
+        font-weight: 600;
+      }
+      QDialog QLabel#sectionLabel {
+        color: #f0b64f;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      QDialog QLabel#mutedLabel {
+        color: #a7b0a8;
+        font-size: 12px;
+      }
+      QWidget#indicatorRow {
+        background: rgba(230, 226, 211, 13);
+        border: 1px solid rgba(230, 226, 211, 28);
+        border-radius: 3px;
+      }
+      QWidget#indicatorParams {
+        background: rgba(230, 226, 211, 8);
+        border-left: 1px solid rgba(240, 182, 79, 90);
+      }
+      QSplitter::handle {
+        background: rgba(230, 226, 211, 24);
+        width: 1px;
+      }
       QDialog QLineEdit, QDialog QComboBox {
         background: #151d19;
         border: 1px solid rgba(230, 226, 211, 48);
@@ -5042,6 +5134,33 @@ plotshape(marks, {
         background: transparent;
         font-size: 13px;
         font-weight: 400;
+      }
+      QDialog QLabel#dialogTitle {
+        color: #131916;
+        font-size: 18px;
+        font-weight: 600;
+      }
+      QDialog QLabel#sectionLabel {
+        color: #b27a17;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      QDialog QLabel#mutedLabel {
+        color: #59635d;
+        font-size: 12px;
+      }
+      QWidget#indicatorRow {
+        background: rgba(23, 31, 27, 10);
+        border: 1px solid rgba(23, 31, 27, 24);
+        border-radius: 3px;
+      }
+      QWidget#indicatorParams {
+        background: rgba(23, 31, 27, 6);
+        border-left: 1px solid rgba(178, 122, 23, 90);
+      }
+      QSplitter::handle {
+        background: rgba(23, 31, 27, 24);
+        width: 1px;
       }
       QDialog QLineEdit, QDialog QComboBox {
         background: #ffffff;
