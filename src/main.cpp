@@ -3184,9 +3184,10 @@ public:
     }
   }
 
-  void load(const QString &symbol, const QString &interval, const QString &higherInterval, const QString &lowerInterval) {
+  void load(const QString &symbol, const QString &interval, const QString &strategyName, const QString &higherInterval, const QString &lowerInterval) {
     symbol_ = symbol.trimmed();
     interval_ = interval.trimmed().toLower();
+    strategyName_ = normalizedStrategyName(strategyName);
     higherInterval_ = higherInterval.trimmed().toLower();
     lowerInterval_ = lowerInterval.trimmed().toLower();
     knownStartMs_ = 0;
@@ -3300,10 +3301,37 @@ public:
                        std::max(endMs, overlayLoadedEndMs_));
   }
 
+  void loadOverlayStrategies() {
+    if (backendBase_.isEmpty()) {
+      emit overlayStrategiesLoaded({"n_in_range_variant"});
+      return;
+    }
+    QUrl url(backendBase_ + "/api/strategy-overlay-strategies");
+    QNetworkReply *reply = network_.get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+      const QByteArray body = reply->readAll();
+      reply->deleteLater();
+      if (reply->error() != QNetworkReply::NoError) {
+        emit errorMessage(replyErrorMessage(reply, body));
+        emit overlayStrategiesLoaded({"n_in_range_variant"});
+        return;
+      }
+      const QJsonDocument doc = QJsonDocument::fromJson(body);
+      const QStringList strategies = parseStrategyList(doc);
+      if (strategies.isEmpty()) {
+        emit errorMessage("策略列表响应格式错误");
+        emit overlayStrategiesLoaded({"n_in_range_variant"});
+        return;
+      }
+      emit overlayStrategiesLoaded(strategies);
+    });
+  }
+
 signals:
   void candlesLoaded(const QVector<Candle> &candles);
   void olderCandlesLoaded(const QVector<Candle> &candles);
   void overlayEventsLoaded(const QJsonArray &events);
+  void overlayStrategiesLoaded(const QStringList &strategies);
   void candleUpdated(const Candle &candle);
   void statusChanged(const QString &status, bool live);
   void errorMessage(const QString &message);
@@ -3327,6 +3355,38 @@ private:
       && std::isfinite(candle.high)
       && std::isfinite(candle.low)
       && std::isfinite(candle.close);
+  }
+
+  static QString normalizedStrategyName(const QString &strategyName) {
+    const QString trimmed = strategyName.trimmed();
+    return trimmed.isEmpty() ? QString("n_in_range_variant") : trimmed;
+  }
+
+  static QStringList parseStrategyList(const QJsonDocument &doc) {
+    QJsonArray array;
+    if (doc.isArray()) {
+      array = doc.array();
+    } else if (doc.isObject()) {
+      const QJsonObject obj = doc.object();
+      if (obj.value("strategies").isArray()) array = obj.value("strategies").toArray();
+      else if (obj.value("data").isArray()) array = obj.value("data").toArray();
+    }
+    QStringList strategies;
+    for (const QJsonValue &value : array) {
+      QString name;
+      if (value.isString()) {
+        name = value.toString().trimmed();
+      } else if (value.isObject()) {
+        const QJsonObject obj = value.toObject();
+        name = obj.value("name").toString().trimmed();
+        if (name.isEmpty()) name = obj.value("id").toString().trimmed();
+        if (name.isEmpty()) name = obj.value("strategy").toString().trimmed();
+      }
+      if (!name.isEmpty() && !strategies.contains(name, Qt::CaseInsensitive)) strategies.push_back(name);
+    }
+    if (strategies.isEmpty()) strategies.push_back("n_in_range_variant");
+    strategies.sort(Qt::CaseInsensitive);
+    return strategies;
   }
 
   void connectSocket() {
@@ -3357,7 +3417,7 @@ private:
     }
     QUrl url(backendBase_ + "/api/strategy-overlay-events");
     QUrlQuery query;
-    query.addQueryItem("strategy", "n_in_range_variant");
+    query.addQueryItem("strategy", normalizedStrategyName(strategyName_));
     query.addQueryItem("symbol", symbol_);
     query.addQueryItem("higherInterval", higherInterval_);
     query.addQueryItem("lowerInterval", lowerInterval_);
@@ -3478,6 +3538,7 @@ private:
   QString wsBase_;
   QString symbol_;
   QString interval_;
+  QString strategyName_ = "n_in_range_variant";
   QString higherInterval_;
   QString lowerInterval_;
   QNetworkAccessManager network_;
@@ -3507,6 +3568,8 @@ public:
     bindSignals();
     applyTheme();
     loadBackendSettings();
+    loadStrategySettings();
+    if (client_.hasConfiguredBackend()) client_.loadOverlayStrategies();
     loadIndicatorSettings();
     loadDisplaySettings();
     if (client_.hasConfiguredBackend()) {
@@ -3934,9 +3997,15 @@ private:
     ohlc_ = new QLabel("O -- H -- L -- C --");
     range_ = new QLabel("Visible Range --");
     events_ = new QLabel("Events --");
+    timeZone_ = new QComboBox;
+    timeZone_->setObjectName("footerTimeZone");
+    timeZone_->setFixedWidth(180);
+    timeZone_->setToolTip("X轴时间时区");
+    populateTimeZones();
     footerLayout->addWidget(ohlc_, 2);
     footerLayout->addWidget(range_, 3);
     footerLayout->addWidget(events_, 1);
+    footerLayout->addWidget(timeZone_, 0, Qt::AlignRight);
     layout->addWidget(footer);
 
     buildSettingsDialog();
@@ -3973,13 +4042,21 @@ private:
     layout->setSpacing(14);
     higher_ = new QComboBox;
     lower_ = new QComboBox;
-    timeZone_ = new QComboBox;
+    strategy_ = new QComboBox;
+    strategy_->setEditable(true);
+    strategy_->setInsertPolicy(QComboBox::NoInsert);
+    strategy_->setMinimumHeight(34);
+    strategy_->lineEdit()->setPlaceholderText("输入或选择策略名");
+    strategy_->addItem("n_in_range_variant");
+    auto *strategyCompleter = new QCompleter(strategy_->model(), strategy_);
+    strategyCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    strategyCompleter->setFilterMode(Qt::MatchContains);
+    strategyCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    strategy_->setCompleter(strategyCompleter);
     higher_->setMinimumHeight(34);
     lower_->setMinimumHeight(34);
-    timeZone_->setMinimumHeight(34);
     higher_->addItems({"15m", "30m", "1h", "4h"});
     lower_->addItems({"1m", "2m", "3m", "5m", "10m", "15m"});
-    populateTimeZones();
     fvgCircleEnabled_ = new QCheckBox("显示 FVG Circle");
     fvgCircleEnabled_->setChecked(chart_->fvgCircleSettings().enabled);
     fvgCircleN_ = new QSpinBox;
@@ -3991,9 +4068,9 @@ private:
     fvgCircleMinGapTicks_->setValue(chart_->fvgCircleSettings().minGapTicks);
     fvgCircleMinGapTicks_->setMinimumHeight(34);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Apply);
+    layout->addRow("策略", strategy_);
     layout->addRow("高周期", higher_);
     layout->addRow("低周期", lower_);
-    layout->addRow("X轴时区", timeZone_);
     auto *indicatorTitle = new QLabel("内置指标");
     indicatorTitle->setObjectName("sectionLabel");
     layout->addRow(indicatorTitle);
@@ -4003,9 +4080,8 @@ private:
     layout->addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, settingsDialog_, &QDialog::reject);
     connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] {
-      applyTimeZoneSetting();
-      saveDisplaySettings();
       chart_->setFvgCircleSettings(fvgCircleEnabled_->isChecked(), fvgCircleN_->value(), fvgCircleMinGapTicks_->value());
+      saveStrategySettings();
       saveIndicatorSettings();
       settingsDialog_->accept();
       refresh();
@@ -4507,6 +4583,7 @@ plotshape(marks, {
       }
       client_.configureBackend(backend, wsUrl_->text(), realtime_->isChecked());
       saveBackendSettings();
+      client_.loadOverlayStrategies();
       if (!startup) refresh();
       return true;
     }
@@ -4528,6 +4605,44 @@ plotshape(marks, {
     settings.setValue("backend/http", client_.backendBase());
     settings.setValue("backend/ws", client_.wsBase());
     settings.setValue("backend/realtime", client_.realtimeEnabled());
+  }
+
+  QString selectedStrategyName() const {
+    if (!strategy_) return "n_in_range_variant";
+    const QString text = strategy_->currentText().trimmed();
+    return text.isEmpty() ? QString("n_in_range_variant") : text;
+  }
+
+  void setSelectedStrategyName(const QString &name) {
+    if (!strategy_) return;
+    const QString resolved = name.trimmed().isEmpty() ? QString("n_in_range_variant") : name.trimmed();
+    const int index = strategy_->findText(resolved, Qt::MatchFixedString);
+    if (index >= 0) strategy_->setCurrentIndex(index);
+    else strategy_->setEditText(resolved);
+  }
+
+  void populateStrategies(const QStringList &strategies) {
+    if (!strategy_) return;
+    const QString current = selectedStrategyName();
+    QSignalBlocker blocker(strategy_);
+    strategy_->clear();
+    QStringList values = strategies;
+    if (!values.contains("n_in_range_variant", Qt::CaseInsensitive)) values.prepend("n_in_range_variant");
+    values.removeDuplicates();
+    values.sort(Qt::CaseInsensitive);
+    strategy_->addItems(values);
+    if (auto *completer = strategy_->completer()) completer->setModel(strategy_->model());
+    setSelectedStrategyName(current);
+  }
+
+  void loadStrategySettings() {
+    QSettings settings("Q4J", "KLineViewer");
+    setSelectedStrategyName(settings.value("strategy/name", "n_in_range_variant").toString());
+  }
+
+  void saveStrategySettings() const {
+    QSettings settings("Q4J", "KLineViewer");
+    settings.setValue("strategy/name", selectedStrategyName());
   }
 
   void populateTimeZones() {
@@ -4665,7 +4780,14 @@ plotshape(marks, {
       dark_ = !dark_;
       applyTheme();
     });
-    connect(settings_, &QPushButton::clicked, settingsDialog_, &QDialog::show);
+    connect(timeZone_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+      applyTimeZoneSetting();
+      saveDisplaySettings();
+    });
+    connect(settings_, &QPushButton::clicked, this, [this] {
+      client_.loadOverlayStrategies();
+      settingsDialog_->show();
+    });
     connect(indicators_, &QPushButton::clicked, this, [this] {
       rebuildCustomIndicatorList();
       updateIndicatorErrorText();
@@ -4683,6 +4805,7 @@ plotshape(marks, {
     connect(&client_, &CandleClient::overlayEventsLoaded, this, [this](const QJsonArray &events) {
       events_->setText(QString("Events %1").arg(events.size()));
     });
+    connect(&client_, &CandleClient::overlayStrategiesLoaded, this, &MainWindow::populateStrategies);
     connect(&client_, &CandleClient::candleUpdated, this, [this](const Candle &candle) {
       appendDebugLog(QString("Chart upsert candle: %1 O=%2 H=%3 L=%4 C=%5")
         .arg(QDateTime::fromMSecsSinceEpoch(candle.ms).toString("yyyy-MM-dd HH:mm:ss.zzz"))
@@ -4955,6 +5078,29 @@ plotshape(marks, {
         font-size: 13px;
         font-weight: 500;
       }
+      QComboBox#footerTimeZone {
+        min-height: 24px; max-height: 24px;
+        background: #111815;
+        border: 1px solid rgba(230, 226, 211, 34);
+        border-radius: 1px;
+        padding: 0 18px 0 8px;
+        color: #d9d4c7;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      QComboBox#footerTimeZone:hover, QComboBox#footerTimeZone:focus {
+        border-color: rgba(240, 182, 79, 150);
+      }
+      QComboBox#footerTimeZone::drop-down {
+        width: 16px;
+        border: 0;
+        background: transparent;
+      }
+      QComboBox#footerTimeZone::down-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+      }
       QDialog QWidget {
         background: transparent;
       }
@@ -5211,6 +5357,29 @@ plotshape(marks, {
         font-size: 13px;
         font-weight: 500;
       }
+      QComboBox#footerTimeZone {
+        min-height: 24px; max-height: 24px;
+        background: #fbfaf4;
+        border: 1px solid rgba(23, 31, 27, 34);
+        border-radius: 1px;
+        padding: 0 18px 0 8px;
+        color: #3b443e;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      QComboBox#footerTimeZone:hover, QComboBox#footerTimeZone:focus {
+        border-color: rgba(178, 122, 23, 150);
+      }
+      QComboBox#footerTimeZone::drop-down {
+        width: 16px;
+        border: 0;
+        background: transparent;
+      }
+      QComboBox#footerTimeZone::down-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+      }
       QDialog QWidget {
         background: transparent;
       }
@@ -5371,7 +5540,7 @@ plotshape(marks, {
     chart_->clearMessage();
     chart_->setCandles({});
     chart_->setOverlayEvents({});
-    client_.load(symbol_->text(), interval_->currentText(), higher_->currentText(), lower_->currentText());
+    client_.load(symbol_->text(), interval_->currentText(), selectedStrategyName(), higher_->currentText(), lower_->currentText());
   }
 
   ChartWidget *chart_ = nullptr;
@@ -5382,6 +5551,7 @@ plotshape(marks, {
   QButtonGroup *annotationGroup_ = nullptr;
   QLineEdit *symbol_ = nullptr;
   QComboBox *interval_ = nullptr;
+  QComboBox *strategy_ = nullptr;
   QComboBox *higher_ = nullptr;
   QComboBox *lower_ = nullptr;
   QComboBox *timeZone_ = nullptr;
