@@ -957,19 +957,11 @@ public:
   }
 
   void setCandles(QVector<Candle> candles) {
-    candles_ = std::move(candles);
-    if (!candles_.isEmpty()) messageText_.clear();
-    overlayEvents_ = {};
-    parsedOverlayEvents_.clear();
-    std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
-      return a.ms < b.ms;
-    });
-    if (visibleCount_ <= 0) visibleCount_ = std::min(160, candleCount());
-    visibleStart_ = maxVisibleStart();
-    hoveredIndex_ = -1;
-    rebuildIndicatorsNow();
-    emitVisibleRange();
-    update();
+    setCandlesInternal(std::move(candles), true);
+  }
+
+  void setReplayCandles(QVector<Candle> candles) {
+    setCandlesInternal(std::move(candles), false);
   }
 
   void prependCandles(QVector<Candle> older) {
@@ -990,6 +982,26 @@ public:
     update();
   }
 
+private:
+  void setCandlesInternal(QVector<Candle> candles, bool clearOverlay) {
+    candles_ = std::move(candles);
+    if (!candles_.isEmpty()) messageText_.clear();
+    if (clearOverlay) {
+      overlayEvents_ = {};
+      parsedOverlayEvents_.clear();
+    }
+    std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
+      return a.ms < b.ms;
+    });
+    if (visibleCount_ <= 0) visibleCount_ = std::min(160, candleCount());
+    visibleStart_ = maxVisibleStart();
+    hoveredIndex_ = -1;
+    rebuildIndicatorsNow();
+    emitVisibleRange();
+    update();
+  }
+
+public:
   void setOverlayEvents(const QJsonArray &events) {
     overlayEvents_ = events;
     parsedOverlayEvents_.clear();
@@ -3939,6 +3951,23 @@ private:
     settings_->setObjectName("toolButton");
     indicators_ = new QPushButton("指标");
     indicators_->setObjectName("toolButton");
+    replayToggle_ = new QPushButton("Replay");
+    replayToggle_->setObjectName("toolButton");
+    replayToggle_->setCheckable(true);
+    replayTime_ = new QDateTimeEdit;
+    replayTime_->setObjectName("replayTime");
+    replayTime_->setDisplayFormat("yyyy-MM-dd HH:mm");
+    replayTime_->setCalendarPopup(true);
+    replayTime_->setTimeSpec(Qt::LocalTime);
+    replayTime_->setDateTime(QDateTime::currentDateTime());
+    replayTime_->setToolTip("Replay 时间，精度到分钟");
+    replayPlay_ = new QPushButton("▶");
+    replayPlay_->setObjectName("iconButton");
+    replayPlay_->setCheckable(true);
+    replayPlay_->setToolTip("播放 / 暂停 Replay");
+    replayStep_ = new QPushButton("›");
+    replayStep_->setObjectName("iconButton");
+    replayStep_->setToolTip("Replay 前进一根K线");
     backend_ = new QPushButton("服务端设置");
     backend_->setObjectName("toolButton");
     wsLogButton_ = new QPushButton("WS日志");
@@ -3955,6 +3984,10 @@ private:
     interval_->setFixedWidth(73);
     settings_->setFixedWidth(75);
     indicators_->setFixedWidth(52);
+    replayToggle_->setFixedWidth(58);
+    replayTime_->setFixedWidth(142);
+    replayPlay_->setFixedWidth(34);
+    replayStep_->setFixedWidth(34);
     backend_->setFixedWidth(88);
     wsLogButton_->setFixedWidth(68);
     updateButton_->setFixedWidth(76);
@@ -3965,6 +3998,10 @@ private:
     headerLayout->addWidget(interval_);
     headerLayout->addWidget(settings_);
     headerLayout->addWidget(indicators_);
+    headerLayout->addWidget(replayToggle_);
+    headerLayout->addWidget(replayTime_);
+    headerLayout->addWidget(replayPlay_);
+    headerLayout->addWidget(replayStep_);
     headerLayout->addWidget(backend_);
     headerLayout->addWidget(wsLogButton_);
     headerLayout->addWidget(updateButton_);
@@ -4681,6 +4718,8 @@ plotshape(marks, {
   void applyTimeZoneSetting() {
     timeZoneId_ = selectedTimeZoneId();
     chart_->setTimeZoneId(timeZoneId_);
+    syncReplayBounds();
+    if (replayActive_) applyReplayView();
     updateVisibleRangeLabel();
   }
 
@@ -4780,6 +4819,31 @@ plotshape(marks, {
       dark_ = !dark_;
       applyTheme();
     });
+    replayTimer_.setInterval(650);
+    connect(&replayTimer_, &QTimer::timeout, this, &MainWindow::stepReplay);
+    connect(replayToggle_, &QPushButton::toggled, this, [this](bool enabled) {
+      replayActive_ = enabled;
+      if (!enabled) {
+        replayTimer_.stop();
+        if (replayPlay_) replayPlay_->setChecked(false);
+      }
+      applyReplayView();
+    });
+    connect(replayTime_, &QDateTimeEdit::dateTimeChanged, this, [this](const QDateTime &) {
+      if (replayActive_) applyReplayView();
+    });
+    connect(replayPlay_, &QPushButton::toggled, this, [this](bool playing) {
+      if (playing) {
+        if (!replayActive_ && replayToggle_) replayToggle_->setChecked(true);
+        replayTimer_.start();
+      } else {
+        replayTimer_.stop();
+      }
+    });
+    connect(replayStep_, &QPushButton::clicked, this, [this] {
+      if (!replayActive_ && replayToggle_) replayToggle_->setChecked(true);
+      stepReplay();
+    });
     connect(timeZone_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
       applyTimeZoneSetting();
       saveDisplaySettings();
@@ -4793,12 +4857,18 @@ plotshape(marks, {
       updateIndicatorErrorText();
       indicatorDialog_->show();
     });
-    connect(&client_, &CandleClient::candlesLoaded, chart_, &ChartWidget::setCandles);
-    connect(&client_, &CandleClient::candlesLoaded, this, [this] {
+    connect(&client_, &CandleClient::candlesLoaded, this, [this](const QVector<Candle> &candles) {
+      loadedCandles_ = candles;
+      normalizeLoadedCandles();
+      syncReplayBounds();
+      applyReplayView();
       updateIndicatorErrorText();
     });
-    connect(&client_, &CandleClient::olderCandlesLoaded, chart_, &ChartWidget::prependCandles);
-    connect(&client_, &CandleClient::olderCandlesLoaded, this, [this] {
+    connect(&client_, &CandleClient::olderCandlesLoaded, this, [this](const QVector<Candle> &candles) {
+      loadedCandles_ += candles;
+      normalizeLoadedCandles();
+      syncReplayBounds();
+      applyReplayView();
       updateIndicatorErrorText();
     });
     connect(&client_, &CandleClient::overlayEventsLoaded, chart_, &ChartWidget::setOverlayEvents);
@@ -4813,7 +4883,9 @@ plotshape(marks, {
         .arg(candle.high)
         .arg(candle.low)
         .arg(candle.close));
-      chart_->upsertCandle(candle);
+      upsertLoadedCandle(candle);
+      if (replayActive_) applyReplayView();
+      else chart_->upsertCandle(candle);
       updateIndicatorErrorText();
     });
     connect(&client_, &CandleClient::debugLog, this, &MainWindow::appendDebugLog);
@@ -5046,6 +5118,20 @@ plotshape(marks, {
       }
       QLineEdit#symbolInput:focus, QComboBox#intervalInput:focus, QPushButton#toolButton:focus {
         border-color: #f0b64f;
+      }
+      QDateTimeEdit#replayTime {
+        min-height: 28px; max-height: 28px;
+        background: #151d19;
+        border: 1px solid rgba(230, 226, 211, 38);
+        border-radius: 1px;
+        padding: 0 8px;
+        color: #f4efe3;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      QDateTimeEdit#replayTime:hover, QDateTimeEdit#replayTime:focus {
+        background: #18211d;
+        border-color: rgba(240, 182, 79, 150);
       }
       QPushButton#iconButton {
         min-height: 28px; max-height: 28px;
@@ -5326,6 +5412,20 @@ plotshape(marks, {
       QLineEdit#symbolInput:focus, QComboBox#intervalInput:focus, QPushButton#toolButton:focus {
         border-color: #b27a17;
       }
+      QDateTimeEdit#replayTime {
+        min-height: 28px; max-height: 28px;
+        background: #f7f8f2;
+        border: 1px solid rgba(23, 31, 27, 38);
+        border-radius: 1px;
+        padding: 0 8px;
+        color: #131916;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      QDateTimeEdit#replayTime:hover, QDateTimeEdit#replayTime:focus {
+        background: #ffffff;
+        border-color: rgba(178, 122, 23, 150);
+      }
       QPushButton#iconButton {
         min-height: 28px; max-height: 28px;
         background: transparent;
@@ -5449,40 +5549,114 @@ plotshape(marks, {
     }
     updateButton_->setEnabled(false);
     updateButton_->setText("检查中");
-    QUrl url(QString("https://api.github.com/repos/%1/releases/latest").arg(repo));
+    requestUpdateRelease(QUrl(QString("https://api.github.com/repos/%1/releases/latest").arg(repo)), true);
+  }
+
+  QNetworkRequest makeGitHubReleaseRequest(const QUrl &url) const {
     QNetworkRequest request(url);
     request.setRawHeader("Accept", "application/vnd.github+json");
+    request.setRawHeader("X-GitHub-Api-Version", "2022-11-28");
     request.setRawHeader("User-Agent", "q4j-kline-viewer");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
+    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    request.setTransferTimeout(15000);
+#endif
+    return request;
+  }
+
+  void requestUpdateRelease(const QUrl &url, bool allowFallback) {
+    QNetworkRequest request = makeGitHubReleaseRequest(url);
     QNetworkReply *reply = updateNetwork_.get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
-      updateButton_->setEnabled(true);
-      updateButton_->setText("检查更新");
+    connect(reply, &QNetworkReply::finished, this, [this, reply, allowFallback] {
       const QByteArray body = reply->readAll();
+      const QUrl requestedUrl = reply->url();
+      const QNetworkReply::NetworkError error = reply->error();
+      const QString errorString = reply->errorString();
+      const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
       reply->deleteLater();
-      if (reply->error() != QNetworkReply::NoError) {
-        QMessageBox::warning(this, "检查更新", QString("检查失败：%1").arg(reply->errorString()));
+      if (error != QNetworkReply::NoError) {
+        if (allowFallback) {
+          requestUpdateRelease(fallbackReleaseApiUrl(), false);
+          return;
+        }
+        finishUpdateCheck();
+        showUpdateCheckFailure(errorString, httpStatus, body, requestedUrl);
         return;
       }
-      handleUpdateReply(body);
+      if (!handleUpdateReply(body) && allowFallback) {
+        requestUpdateRelease(fallbackReleaseApiUrl(), false);
+        return;
+      }
+      finishUpdateCheck();
     });
   }
 
-  void handleUpdateReply(const QByteArray &body) {
+  QUrl fallbackReleaseApiUrl() const {
+    const QString repo = QString::fromUtf8(Q4J_UPDATE_REPO).trimmed();
+    return QUrl(QString("https://api.github.com/repos/%1/releases?per_page=1").arg(repo));
+  }
+
+  void finishUpdateCheck() {
+    updateButton_->setEnabled(true);
+    updateButton_->setText("检查更新");
+  }
+
+  QString updateFailureMessage(const QByteArray &body) const {
     const QJsonDocument doc = QJsonDocument::fromJson(body);
-    if (!doc.isObject()) {
-      QMessageBox::warning(this, "检查更新", "GitHub Release 响应格式错误。");
-      return;
+    if (doc.isObject()) {
+      const QString message = doc.object().value("message").toString().trimmed();
+      if (!message.isEmpty()) return message;
     }
-    const QJsonObject release = doc.object();
+    const QString text = QString::fromUtf8(body).trimmed();
+    return text.left(320);
+  }
+
+  void showUpdateCheckFailure(const QString &error, int httpStatus, const QByteArray &body, const QUrl &url) {
+    QString detail = updateFailureMessage(body);
+    QString message = error.trimmed().isEmpty() ? "网络请求失败" : error.trimmed();
+    if (httpStatus > 0) message += QString(" (HTTP %1)").arg(httpStatus);
+    if (!detail.isEmpty()) message += QString("\n%1").arg(detail);
+
+    QMessageBox box(this);
+    box.setWindowTitle("检查更新失败");
+    box.setText(message);
+    box.setInformativeText("可以稍后重试，或直接打开 GitHub Releases 页面。");
+    QPushButton *open = box.addButton("打开 Releases", QMessageBox::AcceptRole);
+    box.addButton("关闭", QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == open) {
+      const QString repo = QString::fromUtf8(Q4J_UPDATE_REPO).trimmed();
+      QDesktopServices::openUrl(QUrl(QString("https://github.com/%1/releases").arg(repo)));
+    }
+    appendDebugLog(QString("Update check failed: url=%1, http=%2, error=%3, body=%4")
+      .arg(url.toString())
+      .arg(httpStatus)
+      .arg(error)
+      .arg(QString::fromUtf8(body).left(1000)));
+  }
+
+  bool handleUpdateReply(const QByteArray &body) {
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    QJsonObject release;
+    if (doc.isObject()) {
+      release = doc.object();
+    } else if (doc.isArray() && !doc.array().isEmpty() && doc.array().first().isObject()) {
+      release = doc.array().first().toObject();
+    } else {
+      QMessageBox::warning(this, "检查更新", "GitHub Release 响应格式错误。");
+      return false;
+    }
     const QString latest = release.value("tag_name").toString().trimmed();
     if (latest.isEmpty()) {
       QMessageBox::warning(this, "检查更新", "没有读取到最新版本号。");
-      return;
+      return false;
     }
     const QString current = QString::fromUtf8(Q4J_APP_VERSION);
     if (compareVersions(latest, current) <= 0) {
       QMessageBox::information(this, "检查更新", QString("当前已是最新版本：%1").arg(current));
-      return;
+      return true;
     }
 
     QUrl downloadUrl;
@@ -5517,7 +5691,7 @@ plotshape(marks, {
     if (downloadUrl.isEmpty()) downloadUrl = QUrl(release.value("html_url").toString());
     if (downloadUrl.isEmpty()) {
       QMessageBox::warning(this, "检查更新", QString("发现新版本 %1，但没有找到可下载文件。").arg(latest));
-      return;
+      return true;
     }
 
     QMessageBox box(this);
@@ -5528,6 +5702,89 @@ plotshape(marks, {
     box.addButton("取消", QMessageBox::RejectRole);
     box.exec();
     if (box.clickedButton() == open) QDesktopServices::openUrl(downloadUrl);
+    return true;
+  }
+
+  void normalizeLoadedCandles() {
+    std::sort(loadedCandles_.begin(), loadedCandles_.end(), [](const Candle &a, const Candle &b) {
+      return a.ms < b.ms;
+    });
+    loadedCandles_.erase(std::unique(loadedCandles_.begin(), loadedCandles_.end(), [](const Candle &a, const Candle &b) {
+      return a.ms == b.ms;
+    }), loadedCandles_.end());
+  }
+
+  void upsertLoadedCandle(const Candle &candle) {
+    const auto it = std::lower_bound(loadedCandles_.begin(), loadedCandles_.end(), candle.ms, [](const Candle &item, qint64 ms) {
+      return item.ms < ms;
+    });
+    if (it != loadedCandles_.end() && it->ms == candle.ms) *it = candle;
+    else loadedCandles_.insert(it, candle);
+    syncReplayBounds();
+  }
+
+  qint64 replayCursorMs() const {
+    if (!replayTime_) return 0;
+    QTimeZone zone(timeZoneId_);
+    if (!zone.isValid()) zone = QTimeZone::systemTimeZone();
+    return QDateTime(replayTime_->date(), replayTime_->time(), zone).toMSecsSinceEpoch();
+  }
+
+  QDateTime replayDateTimeFromMs(qint64 ms) const {
+    QTimeZone zone(timeZoneId_);
+    if (!zone.isValid()) zone = QTimeZone::systemTimeZone();
+    return QDateTime::fromMSecsSinceEpoch(ms, zone);
+  }
+
+  QVector<Candle> replayCandles() const {
+    if (!replayActive_) return loadedCandles_;
+    const qint64 cursor = replayCursorMs();
+    QVector<Candle> visible;
+    visible.reserve(loadedCandles_.size());
+    for (const Candle &candle : loadedCandles_) {
+      if (candle.ms <= cursor) visible.push_back(candle);
+      else break;
+    }
+    return visible;
+  }
+
+  void applyReplayView() {
+    if (!chart_) return;
+    chart_->setReplayCandles(replayCandles());
+    updateReplayUi();
+  }
+
+  void syncReplayBounds() {
+    if (!replayTime_ || loadedCandles_.isEmpty()) return;
+    const QDateTime first = replayDateTimeFromMs(loadedCandles_.first().ms);
+    const QDateTime last = replayDateTimeFromMs(loadedCandles_.last().ms);
+    QSignalBlocker blocker(replayTime_);
+    replayTime_->setMinimumDateTime(first);
+    replayTime_->setMaximumDateTime(last);
+    if (!replayActive_) replayTime_->setDateTime(last);
+    else if (replayTime_->dateTime() < first) replayTime_->setDateTime(first);
+    else if (replayTime_->dateTime() > last) replayTime_->setDateTime(last);
+  }
+
+  void updateReplayUi() {
+    if (replayToggle_) replayToggle_->setText(replayActive_ ? "退出" : "Replay");
+    if (replayPlay_) replayPlay_->setText(replayTimer_.isActive() ? "Ⅱ" : "▶");
+  }
+
+  void stepReplay() {
+    if (!replayTime_ || loadedCandles_.isEmpty()) return;
+    const qint64 cursor = replayCursorMs();
+    auto it = std::upper_bound(loadedCandles_.begin(), loadedCandles_.end(), cursor, [](qint64 ms, const Candle &candle) {
+      return ms < candle.ms;
+    });
+    if (it == loadedCandles_.end()) {
+      replayTimer_.stop();
+      if (replayPlay_) replayPlay_->setChecked(false);
+      updateReplayUi();
+      return;
+    }
+    replayTime_->setDateTime(replayDateTimeFromMs(it->ms));
+    if (replayActive_) applyReplayView();
   }
 
   void refresh() {
@@ -5537,6 +5794,9 @@ plotshape(marks, {
     lastRangeEndMs_ = 0;
     lastRangeFirstIndex_ = -1;
     lastRangeLastIndex_ = -1;
+    loadedCandles_.clear();
+    replayTimer_.stop();
+    if (replayPlay_) replayPlay_->setChecked(false);
     chart_->clearMessage();
     chart_->setCandles({});
     chart_->setOverlayEvents({});
@@ -5555,8 +5815,12 @@ plotshape(marks, {
   QComboBox *higher_ = nullptr;
   QComboBox *lower_ = nullptr;
   QComboBox *timeZone_ = nullptr;
+  QDateTimeEdit *replayTime_ = nullptr;
   QPushButton *settings_ = nullptr;
   QPushButton *indicators_ = nullptr;
+  QPushButton *replayToggle_ = nullptr;
+  QPushButton *replayPlay_ = nullptr;
+  QPushButton *replayStep_ = nullptr;
   QPushButton *backend_ = nullptr;
   QPushButton *wsLogButton_ = nullptr;
   QPushButton *updateButton_ = nullptr;
@@ -5586,12 +5850,15 @@ plotshape(marks, {
   QSpinBox *fvgCircleMinGapTicks_ = nullptr;
   QNetworkAccessManager updateNetwork_;
   CandleClient client_;
+  QVector<Candle> loadedCandles_;
+  QTimer replayTimer_;
   QByteArray timeZoneId_ = QTimeZone::systemTimeZoneId();
   qint64 lastRangeStartMs_ = 0;
   qint64 lastRangeEndMs_ = 0;
   int lastRangeFirstIndex_ = -1;
   int lastRangeLastIndex_ = -1;
   bool dark_ = true;
+  bool replayActive_ = false;
   bool windowDragging_ = false;
   bool resizingWindow_ = false;
   Qt::Edges resizeEdges_;
