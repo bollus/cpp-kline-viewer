@@ -3959,7 +3959,9 @@ private:
     replayTime_->setDisplayFormat("yyyy-MM-dd HH:mm");
     replayTime_->setCalendarPopup(true);
     replayTime_->setTimeSpec(Qt::LocalTime);
-    replayTime_->setDateTime(QDateTime::currentDateTime());
+    replayTime_->setMinimumDateTime(QDateTime(QDate(2000, 1, 1), QTime(0, 0)));
+    replayTime_->setMaximumDateTime(QDateTime(QDate(2099, 12, 31), QTime(23, 59)));
+    replayTime_->setDateTime(normalizeReplayMinute(QDateTime::currentDateTime()));
     replayTime_->setToolTip("Replay 时间，精度到分钟");
     replayPlay_ = new QPushButton("▶");
     replayPlay_->setObjectName("iconButton");
@@ -4829,7 +4831,13 @@ plotshape(marks, {
       }
       applyReplayView();
     });
-    connect(replayTime_, &QDateTimeEdit::dateTimeChanged, this, [this](const QDateTime &) {
+    connect(replayTime_, &QDateTimeEdit::dateTimeChanged, this, [this](const QDateTime &value) {
+      replayTimeTouched_ = true;
+      const QDateTime normalized = normalizeReplayMinute(value);
+      if (normalized != value) {
+        QSignalBlocker blocker(replayTime_);
+        replayTime_->setDateTime(normalized);
+      }
       if (replayActive_) applyReplayView();
     });
     connect(replayPlay_, &QPushButton::toggled, this, [this](bool playing) {
@@ -5723,6 +5731,12 @@ plotshape(marks, {
     syncReplayBounds();
   }
 
+  QDateTime normalizeReplayMinute(const QDateTime &dateTime) const {
+    QDateTime normalized = dateTime;
+    normalized.setTime(QTime(dateTime.time().hour(), dateTime.time().minute()));
+    return normalized;
+  }
+
   qint64 replayCursorMs() const {
     if (!replayTime_) return 0;
     QTimeZone zone(timeZoneId_);
@@ -5756,14 +5770,10 @@ plotshape(marks, {
 
   void syncReplayBounds() {
     if (!replayTime_ || loadedCandles_.isEmpty()) return;
-    const QDateTime first = replayDateTimeFromMs(loadedCandles_.first().ms);
     const QDateTime last = replayDateTimeFromMs(loadedCandles_.last().ms);
+    if (replayTimeTouched_) return;
     QSignalBlocker blocker(replayTime_);
-    replayTime_->setMinimumDateTime(first);
-    replayTime_->setMaximumDateTime(last);
-    if (!replayActive_) replayTime_->setDateTime(last);
-    else if (replayTime_->dateTime() < first) replayTime_->setDateTime(first);
-    else if (replayTime_->dateTime() > last) replayTime_->setDateTime(last);
+    replayTime_->setDateTime(normalizeReplayMinute(last));
   }
 
   void updateReplayUi() {
@@ -5859,6 +5869,7 @@ plotshape(marks, {
   int lastRangeLastIndex_ = -1;
   bool dark_ = true;
   bool replayActive_ = false;
+  bool replayTimeTouched_ = false;
   bool windowDragging_ = false;
   bool resizingWindow_ = false;
   Qt::Edges resizeEdges_;
