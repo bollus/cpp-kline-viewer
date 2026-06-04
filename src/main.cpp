@@ -1716,6 +1716,25 @@ private:
     annotationDefaultStyles_.insert(static_cast<int>(annotation.tool), annotation.style);
   }
 
+  bool isPositionAnnotation(const ManualAnnotation &annotation) const {
+    return (annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) && annotation.points.size() >= 3;
+  }
+
+  QVector<AnnotationPoint> positionAnnotationHandlePoints(const ManualAnnotation &annotation) const {
+    if (!isPositionAnnotation(annotation)) return annotation.points;
+    const AnnotationPoint entry = annotation.points[0];
+    const AnnotationPoint profit = annotation.points[1];
+    const AnnotationPoint loss = annotation.points[2];
+    const double endIndex = std::max(profit.index, loss.index);
+    const double top = std::max({entry.price, profit.price, loss.price});
+    const double bottom = std::min({entry.price, profit.price, loss.price});
+    return {
+      {entry.index, top},
+      {entry.index, bottom},
+      {endIndex, entry.price}
+    };
+  }
+
   void addPositionAnnotation(const AnnotationPoint &entry, AnnotationTool tool) {
     double minPrice, maxPrice;
     visibleRange(minPrice, maxPrice);
@@ -1858,13 +1877,61 @@ private:
     p.drawLine(pointAtTime(startMs, profitBoundary, minPrice, maxPrice), pointAtTime(endMs, profitBoundary, minPrice, maxPrice));
     p.setPen(QPen(lossLine, std::max(1, annotation.style.lineWidth), Qt::DashLine));
     p.drawLine(pointAtTime(startMs, lossBoundary, minPrice, maxPrice), pointAtTime(endMs, lossBoundary, minPrice, maxPrice));
+    drawPositionAnnotationLabels(p, annotation, startMs, endMs, entry.price, profitBoundary, lossBoundary, minPrice, maxPrice);
     if (selected) drawAnnotationSelection(p, annotation, minPrice, maxPrice);
+  }
+
+  void drawPositionAnnotationLabels(QPainter &p, const ManualAnnotation &annotation, qint64 startMs, qint64 endMs, double entry, double profitBoundary, double lossBoundary, double minPrice, double maxPrice) {
+    const double risk = std::abs(entry - lossBoundary);
+    const double reward = std::abs(profitBoundary - entry);
+    const double ratio = risk > 1e-12 ? reward / risk : std::numeric_limits<double>::quiet_NaN();
+    const bool isLong = annotation.tool == AnnotationTool::LongBlock;
+    const double top = std::max(profitBoundary, lossBoundary);
+    const double bottom = std::min(profitBoundary, lossBoundary);
+    const qint64 midMs = startMs + (endMs - startMs) / 2;
+    auto badge = [&](const QPointF &anchor, const QString &text, const QColor &color, Qt::Alignment align) {
+      if (text.isEmpty()) return;
+      QFont font = uiFont(10, QFont::DemiBold);
+      p.setFont(font);
+      const QFontMetrics fm(font);
+      const QSize size(fm.horizontalAdvance(text) + 12, 20);
+      QPointF topLeft = anchor;
+      if (align & Qt::AlignHCenter) topLeft.rx() -= size.width() / 2.0;
+      else if (align & Qt::AlignRight) topLeft.rx() -= size.width();
+      if (align & Qt::AlignVCenter) topLeft.ry() -= size.height() / 2.0;
+      else if (align & Qt::AlignBottom) topLeft.ry() -= size.height();
+      QRectF rect(topLeft, size);
+      rect = rect.intersected(plotRect().adjusted(2, 2, -2, -2));
+      QColor fill = color;
+      fill.setAlpha(235);
+      p.setPen(Qt::NoPen);
+      p.setBrush(fill);
+      p.drawRoundedRect(rect, 3, 3);
+      p.setPen(Qt::white);
+      p.drawText(rect, Qt::AlignCenter, text);
+    };
+    const QColor profitColor = annotation.style.profit.isValid() ? annotation.style.profit : QColor("#20c997");
+    const QColor lossColor = annotation.style.loss.isValid() ? annotation.style.loss : QColor("#ef5f78");
+    const QString ratioText = std::isfinite(ratio) ? QString("Risk/reward ratio: %1").arg(ratio, 0, 'f', 2) : "Risk/reward ratio: --";
+    badge(pointAtTime(midMs, entry, minPrice, maxPrice) + QPointF(0, -10), ratioText, isLong ? profitColor : lossColor, Qt::AlignHCenter | Qt::AlignBottom);
+    badge(pointAtTime(startMs, profitBoundary, minPrice, maxPrice) + QPointF(8, 0), QString("Reward: %1").arg(reward, 0, 'f', 2), profitColor, Qt::AlignLeft | (profitBoundary == top ? Qt::AlignBottom : Qt::AlignTop));
+    badge(pointAtTime(startMs, lossBoundary, minPrice, maxPrice) + QPointF(8, 0), QString("Risk: %1").arg(risk, 0, 'f', 2), lossColor, Qt::AlignLeft | (lossBoundary == bottom ? Qt::AlignTop : Qt::AlignBottom));
   }
 
   void drawAnnotationSelection(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice) {
     p.save();
     p.setPen(QPen(QColor("#f0b64f"), 1.4));
     p.setBrush(QColor("#f0b64f"));
+    if (isPositionAnnotation(annotation)) {
+      for (const AnnotationPoint &point : positionAnnotationHandlePoints(annotation)) {
+        const QPointF pos = annotationPoint(point, minPrice, maxPrice);
+        QRectF handle(pos.x() - 4, pos.y() - 4, 8, 8);
+        p.setBrush(QColor("#fffdf7"));
+        p.drawRect(handle);
+      }
+      p.restore();
+      return;
+    }
     for (const AnnotationPoint &point : annotation.points) {
       const QPointF pos = annotationPoint(point, minPrice, maxPrice);
       QRectF handle(pos.x() - 3, pos.y() - 3, 6, 6);
@@ -1875,15 +1942,31 @@ private:
 
   QRectF annotationBounds(const ManualAnnotation &annotation, double minPrice, double maxPrice) const {
     QRectF bounds;
-    for (const AnnotationPoint &point : annotation.points) {
+    const QVector<AnnotationPoint> points = isPositionAnnotation(annotation) ? positionAnnotationHandlePoints(annotation) : annotation.points;
+    for (const AnnotationPoint &point : points) {
       const QPointF pos = annotationPoint(point, minPrice, maxPrice);
       const QRectF handle(pos.x() - 6, pos.y() - 6, 12, 12);
       bounds = bounds.isNull() ? handle : bounds.united(handle);
+    }
+    if (isPositionAnnotation(annotation) && annotation.points.size() >= 3) {
+      const AnnotationPoint entry = annotation.points[0];
+      const double endIndex = std::max(annotation.points[1].index, annotation.points[2].index);
+      const double top = std::max({entry.price, annotation.points[1].price, annotation.points[2].price});
+      const double bottom = std::min({entry.price, annotation.points[1].price, annotation.points[2].price});
+      bounds = bounds.united(QRectF(annotationPoint({entry.index, top}, minPrice, maxPrice), annotationPoint({endIndex, bottom}, minPrice, maxPrice)).normalized());
     }
     return bounds.adjusted(-8, -8, 8, 8);
   }
 
   int annotationHandleAt(const ManualAnnotation &annotation, const QPointF &pos, double minPrice, double maxPrice) const {
+    if (isPositionAnnotation(annotation)) {
+      const QVector<AnnotationPoint> handles = positionAnnotationHandlePoints(annotation);
+      for (int i = 0; i < handles.size(); ++i) {
+        const QPointF handle = annotationPoint(handles[i], minPrice, maxPrice);
+        if (QRectF(handle.x() - 8, handle.y() - 8, 16, 16).contains(pos)) return positionAnnotationHandleBase_ + i;
+      }
+      return -1;
+    }
     for (int i = 0; i < annotation.points.size(); ++i) {
       const QPointF handle = annotationPoint(annotation.points[i], minPrice, maxPrice);
       if (QRectF(handle.x() - 7, handle.y() - 7, 14, 14).contains(pos)) return i;
@@ -1921,6 +2004,25 @@ private:
     if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size()) return;
     ManualAnnotation &annotation = manualAnnotations_[selectedAnnotation_];
     const AnnotationPoint current = chartPointFromPosition(pos);
+    if (annotationDragMode_ == AnnotationDragMode::ResizePoint && isPositionAnnotation(annotation) && annotationDragPoint_ >= positionAnnotationHandleBase_) {
+      annotation.points = annotationDragOriginal_;
+      const int handle = annotationDragPoint_ - positionAnnotationHandleBase_;
+      const double top = std::max({annotation.points[0].price, annotation.points[1].price, annotation.points[2].price});
+      const double bottom = std::min({annotation.points[0].price, annotation.points[1].price, annotation.points[2].price});
+      const int topPoint = std::abs(annotation.points[1].price - top) <= std::abs(annotation.points[2].price - top) ? 1 : 2;
+      const int bottomPoint = topPoint == 1 ? 2 : 1;
+      if (handle == 0) {
+        annotation.points[topPoint].price = std::max(current.price, annotation.points[0].price);
+      } else if (handle == 1) {
+        annotation.points[bottomPoint].price = std::min(current.price, annotation.points[0].price);
+      } else if (handle == 2) {
+        const double minEnd = annotation.points[0].index + 1.0;
+        const double nextIndex = std::max(minEnd, current.index);
+        annotation.points[1].index = nextIndex;
+        annotation.points[2].index = nextIndex;
+      }
+      return;
+    }
     if (annotationDragMode_ == AnnotationDragMode::ResizePoint && annotationDragPoint_ >= 0 && annotationDragPoint_ < annotation.points.size()) {
       annotation.points = annotationDragOriginal_;
       annotation.points[annotationDragPoint_] = current;
@@ -3144,6 +3246,7 @@ private:
   int selectedAnnotation_ = -1;
   AnnotationDragMode annotationDragMode_ = AnnotationDragMode::None;
   int annotationDragPoint_ = -1;
+  static constexpr int positionAnnotationHandleBase_ = 1000;
   AnnotationPoint annotationDragStart_;
   QVector<AnnotationPoint> annotationDragOriginal_;
   QHash<int, AnnotationStyle> annotationDefaultStyles_;
