@@ -2541,6 +2541,7 @@ private:
     QString backgroundType;
     QString backgroundDirection;
     QVector<PositionPartial> partials;
+    bool opened = false;
     bool closed = false;
     qint64 closeTime = 0;
     double exitPrice = std::numeric_limits<double>::quiet_NaN();
@@ -2594,6 +2595,7 @@ private:
         position.sl = payload.value("sl").toDouble(std::numeric_limits<double>::quiet_NaN());
         position.tp1 = payload.value("tp1").toDouble(std::numeric_limits<double>::quiet_NaN());
         position.quantity = payload.value("quantity").toDouble(std::numeric_limits<double>::quiet_NaN());
+        position.opened = true;
         const QJsonObject signal = payload.value("entry_signal").toObject();
         const QJsonObject background = payload.value("background").toObject();
         const SentEntry sent = sentEntries.value(positionSignalKey(position.direction, entryTime));
@@ -2627,6 +2629,7 @@ private:
     }
 
     for (const PositionShape &position : std::as_const(positions)) {
+      if (!position.opened) continue;
       drawPositionShape(p, position, minPrice, maxPrice);
     }
   }
@@ -2818,9 +2821,11 @@ private:
 
   struct PositionHitbox {
     QRectF rect;
+    QString key;
     QString direction;
     qint64 startMs = 0;
     qint64 endMs = 0;
+    double entryY = std::numeric_limits<double>::quiet_NaN();
     double entry = std::numeric_limits<double>::quiet_NaN();
     double sl = std::numeric_limits<double>::quiet_NaN();
     double oneRtp = std::numeric_limits<double>::quiet_NaN();
@@ -2849,9 +2854,11 @@ private:
     const double risk = std::isfinite(sl) ? std::abs(entry - sl) : std::numeric_limits<double>::quiet_NaN();
     PositionHitbox hitbox;
     hitbox.rect = rect.adjusted(-2, -2, 2, 2);
+    hitbox.key = position.key;
     hitbox.direction = position.direction;
     hitbox.startMs = position.entryTime;
     hitbox.endMs = end;
+    hitbox.entryY = pointAtTime(position.entryTime, entry, minPrice, maxPrice).y();
     hitbox.entry = entry;
     hitbox.sl = sl;
     if (std::isfinite(sl)) {
@@ -2869,10 +2876,21 @@ private:
   }
 
   int positionHitboxAt(const QPointF &point) const {
+    int bestIndex = -1;
+    double bestScore = std::numeric_limits<double>::infinity();
     for (int i = positionHitboxes_.size() - 1; i >= 0; --i) {
-      if (positionHitboxes_[i].rect.contains(point)) return i;
+      const PositionHitbox &hitbox = positionHitboxes_[i];
+      if (!hitbox.rect.contains(point)) continue;
+      const double entryY = std::isfinite(hitbox.entryY) ? hitbox.entryY : hitbox.rect.center().y();
+      const double priceScore = std::abs(point.y() - entryY);
+      const double timeScore = std::abs(point.x() - hitbox.rect.left()) / std::max(1.0, hitbox.rect.width()) * 0.01;
+      const double score = priceScore + timeScore;
+      if (score < bestScore || (std::abs(score - bestScore) < 1e-9 && (bestIndex < 0 || hitbox.startMs > positionHitboxes_[bestIndex].startMs))) {
+        bestIndex = i;
+        bestScore = score;
+      }
     }
-    return -1;
+    return bestIndex;
   }
 
   QString jsonNumber(double value) const {
@@ -2894,14 +2912,22 @@ private:
     }
     return QString(
       "{\n"
-      "    \"entry\": %1,\n"
-      "    \"sl\": %2,\n"
-      "    \"1r_tp\": %3,\n"
+      "    \"position_key\": \"%1\",\n"
+      "    \"direction\": \"%2\",\n"
+      "    \"start_time\": %3,\n"
+      "    \"end_time\": %4,\n"
+      "    \"entry\": %5,\n"
+      "    \"sl\": %6,\n"
+      "    \"1r_tp\": %7,\n"
       "    \"kline\": [\n"
-      "%4\n"
+      "%8\n"
       "    ]\n"
       "}"
     ).arg(
+      hitbox.key,
+      hitbox.direction,
+      QString::number(hitbox.startMs),
+      QString::number(hitbox.endMs),
       jsonNumber(hitbox.entry),
       jsonNumber(hitbox.sl),
       jsonNumber(hitbox.oneRtp),
@@ -4836,6 +4862,7 @@ plotshape(marks, {
     });
     connect(replayTime_, &QDateTimeEdit::dateTimeChanged, this, [this](const QDateTime &value) {
       replayTimeTouched_ = true;
+      if (!replayStepping_ && replayPlay_ && replayPlay_->isChecked()) replayPlay_->setChecked(false);
       const QDateTime normalized = normalizeReplayMinute(value);
       if (normalized != value) {
         QSignalBlocker blocker(replayTime_);
@@ -4895,8 +4922,7 @@ plotshape(marks, {
         .arg(candle.low)
         .arg(candle.close));
       upsertLoadedCandle(candle);
-      if (replayActive_) applyReplayView();
-      else chart_->upsertCandle(candle);
+      if (!replayActive_) chart_->upsertCandle(candle);
       updateIndicatorErrorText();
     });
     connect(&client_, &CandleClient::debugLog, this, &MainWindow::appendDebugLog);
@@ -5731,7 +5757,7 @@ plotshape(marks, {
     });
     if (it != loadedCandles_.end() && it->ms == candle.ms) *it = candle;
     else loadedCandles_.insert(it, candle);
-    syncReplayBounds();
+    if (!replayActive_) syncReplayBounds();
   }
 
   QDateTime normalizeReplayMinute(const QDateTime &dateTime) const {
@@ -5773,6 +5799,7 @@ plotshape(marks, {
 
   void syncReplayBounds() {
     if (!replayTime_ || loadedCandles_.isEmpty()) return;
+    if (replayActive_) return;
     const QDateTime last = replayDateTimeFromMs(loadedCandles_.last().ms);
     if (replayTimeTouched_) return;
     QSignalBlocker blocker(replayTime_);
@@ -5796,7 +5823,9 @@ plotshape(marks, {
       updateReplayUi();
       return;
     }
+    replayStepping_ = true;
     replayTime_->setDateTime(replayDateTimeFromMs(it->ms));
+    replayStepping_ = false;
     if (replayActive_) applyReplayView();
   }
 
@@ -5873,6 +5902,7 @@ plotshape(marks, {
   bool dark_ = true;
   bool replayActive_ = false;
   bool replayTimeTouched_ = false;
+  bool replayStepping_ = false;
   bool windowDragging_ = false;
   bool resizingWindow_ = false;
   Qt::Edges resizeEdges_;
