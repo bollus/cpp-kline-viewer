@@ -2465,8 +2465,11 @@ private:
 
   void drawIfvgEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, QSet<QString> &drawn, double minPrice, double maxPrice) {
     const QJsonObject signal = payload.value("entry_signal").toObject();
-    if (signal.value("type").toString() != "IFVG") return;
-    const QJsonObject fvg = signal.value("fvg").toObject();
+    QJsonObject fvg = signal.value("fvg").toObject();
+    if (signal.value("type").toString() != "IFVG" && payload.contains("stop_ifvg")) {
+      fvg = payload.value("stop_ifvg").toObject();
+    }
+    if (signal.value("type").toString() != "IFVG" && fvg.isEmpty()) return;
     if (fvg.isEmpty()) return;
     const double top = fvg.value("top").toDouble(std::numeric_limits<double>::quiet_NaN());
     const double bottom = fvg.value("bottom").toDouble(std::numeric_limits<double>::quiet_NaN());
