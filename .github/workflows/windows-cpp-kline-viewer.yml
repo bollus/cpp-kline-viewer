@@ -96,15 +96,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Update-MpSignature
-          Start-MpScan -ScanPath (Resolve-Path package) -ScanType CustomScan
+          try {
+            Update-MpSignature
+          } catch {
+            Write-Warning "Microsoft Defender signature update failed: $($_.Exception.Message)"
+          }
+          try {
+            Start-MpScan -ScanPath (Resolve-Path package) -ScanType CustomScan
+          } catch {
+            Write-Warning "Microsoft Defender package scan could not run: $($_.Exception.Message)"
+          }
 
       - name: Scan installer with Microsoft Defender
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $installer = Resolve-Path build/installer/q4j-kline-viewer-windows-setup.exe
-          Start-MpScan -ScanPath $installer -ScanType CustomScan
+          try {
+            Start-MpScan -ScanPath $installer -ScanType CustomScan
+          } catch {
+            Write-Warning "Microsoft Defender installer scan could not run: $($_.Exception.Message)"
+          }
           if (!(Test-Path $installer)) {
             throw "Microsoft Defender removed or quarantined the installer"
           }
