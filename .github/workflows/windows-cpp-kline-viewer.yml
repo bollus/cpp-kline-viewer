@@ -90,6 +90,7 @@ jobs:
         run: |
           Get-ChildItem -Recurse package | Select-Object FullName, Length
           Get-ChildItem -Recurse build/installer | Select-Object FullName, Length
+          Get-FileHash package/q4j_kline_viewer.exe -Algorithm SHA256
           Get-FileHash build/installer/q4j-kline-viewer-windows-setup.exe -Algorithm SHA256
 
       - name: Scan package with Microsoft Defender
