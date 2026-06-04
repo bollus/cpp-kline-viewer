@@ -4094,7 +4094,7 @@ private:
     strategy_->setCompleter(strategyCompleter);
     higher_->setMinimumHeight(34);
     lower_->setMinimumHeight(34);
-    higher_->addItems({"15m", "30m", "1h", "4h"});
+    higher_->addItems({"5m", "10m", "15m", "30m", "1h", "4h"});
     lower_->addItems({"1m", "2m", "3m", "5m", "10m", "15m"});
     fvgCircleEnabled_ = new QCheckBox("显示 FVG Circle");
     fvgCircleEnabled_->setChecked(chart_->fvgCircleSettings().enabled);
