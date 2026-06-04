@@ -3335,6 +3335,57 @@ public:
     });
   }
 
+  void loadReplayAround(qint64 cursorMs) {
+    if (loadingReplay_ || backendBase_.isEmpty() || symbol_.isEmpty() || interval_.isEmpty() || cursorMs <= 0) return;
+    loadingReplay_ = true;
+    const qint64 step = intervalMs(interval_);
+    const qint64 start = std::max<qint64>(0, cursorMs - step * 260);
+    const qint64 end = cursorMs + step * 80;
+    QUrl url(backendBase_ + "/api/candles");
+    QUrlQuery query;
+    query.addQueryItem("symbol", symbol_);
+    query.addQueryItem("interval", interval_);
+    query.addQueryItem("startTime", QString::number(start));
+    query.addQueryItem("endTime", QString::number(end));
+    url.setQuery(query);
+    emit statusChanged("Replay加载中", false);
+    QNetworkReply *reply = network_.get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, start, end] {
+      const QByteArray body = reply->readAll();
+      reply->deleteLater();
+      loadingReplay_ = false;
+      if (reply->error() != QNetworkReply::NoError) {
+        emit statusChanged("Replay加载失败", false);
+        emit errorMessage(replyErrorMessage(reply, body));
+        return;
+      }
+      const QJsonDocument doc = QJsonDocument::fromJson(body);
+      if (doc.isObject()) {
+        const QString message = doc.object().value("message").toString();
+        emit statusChanged("Replay加载失败", false);
+        emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
+        return;
+      }
+      if (!doc.isArray()) {
+        emit statusChanged("Replay加载失败", false);
+        emit errorMessage("响应格式错误");
+        return;
+      }
+      QVector<Candle> candles;
+      for (const QJsonValue &value : doc.array()) {
+        const Candle candle = parseCandle(value.toObject());
+        if (isValidCandle(candle)) candles.push_back(candle);
+      }
+      if (candles.isEmpty()) {
+        emit errorMessage("Replay 时间附近没有K线数据");
+        return;
+      }
+      updateKnownRange(candles);
+      emit replayCandlesLoaded(candles);
+      fetchOverlayEvents(start, end + intervalMs(interval_) * 20);
+    });
+  }
+
   void loadOverlayRange(qint64 startMs, qint64 endMs) {
     if (backendBase_.isEmpty() || symbol_.isEmpty()) return;
     if (startMs >= overlayLoadedStartMs_ && endMs <= overlayLoadedEndMs_) return;
@@ -3371,6 +3422,7 @@ public:
 signals:
   void candlesLoaded(const QVector<Candle> &candles);
   void olderCandlesLoaded(const QVector<Candle> &candles);
+  void replayCandlesLoaded(const QVector<Candle> &candles);
   void overlayEventsLoaded(const QJsonArray &events);
   void overlayStrategiesLoaded(const QStringList &strategies);
   void candleUpdated(const Candle &candle);
@@ -3586,6 +3638,7 @@ private:
   QWebSocket socket_;
   QTimer liveWatchdog_;
   bool loadingOlder_ = false;
+  bool loadingReplay_ = false;
   bool realtimeEnabled_ = true;
   qint64 lastRealtimeMessageMs_ = 0;
   qint64 knownStartMs_ = 0;
@@ -4862,6 +4915,7 @@ plotshape(marks, {
     });
     connect(replayTime_, &QDateTimeEdit::dateTimeChanged, this, [this](const QDateTime &value) {
       replayTimeTouched_ = true;
+      replayLoadCursorMs_ = 0;
       if (!replayStepping_ && replayPlay_ && replayPlay_->isChecked()) replayPlay_->setChecked(false);
       const QDateTime normalized = normalizeReplayMinute(value);
       if (normalized != value) {
@@ -4906,6 +4960,13 @@ plotshape(marks, {
       loadedCandles_ += candles;
       normalizeLoadedCandles();
       syncReplayBounds();
+      applyReplayView();
+      updateIndicatorErrorText();
+    });
+    connect(&client_, &CandleClient::replayCandlesLoaded, this, [this](const QVector<Candle> &candles) {
+      loadedCandles_ += candles;
+      normalizeLoadedCandles();
+      replayLoadCursorMs_ = 0;
       applyReplayView();
       updateIndicatorErrorText();
     });
@@ -5791,8 +5852,27 @@ plotshape(marks, {
     return visible;
   }
 
+  bool hasReplayDataForCursor(qint64 cursor) const {
+    if (!replayActive_) return true;
+    if (loadedCandles_.isEmpty()) return false;
+    return cursor >= loadedCandles_.first().ms;
+  }
+
+  bool requestReplayDataIfNeeded(qint64 cursor) {
+    if (hasReplayDataForCursor(cursor)) return false;
+    if (replayLoadCursorMs_ == cursor) return true;
+    replayLoadCursorMs_ = cursor;
+    if (chart_) chart_->showMessage("正在加载 Replay 时间附近的K线...");
+    client_.loadReplayAround(cursor);
+    return true;
+  }
+
   void applyReplayView() {
     if (!chart_) return;
+    if (replayActive_ && requestReplayDataIfNeeded(replayCursorMs())) {
+      updateReplayUi();
+      return;
+    }
     chart_->setReplayCandles(replayCandles());
     updateReplayUi();
   }
@@ -5837,6 +5917,7 @@ plotshape(marks, {
     lastRangeFirstIndex_ = -1;
     lastRangeLastIndex_ = -1;
     loadedCandles_.clear();
+    replayLoadCursorMs_ = 0;
     replayTimer_.stop();
     if (replayPlay_) replayPlay_->setChecked(false);
     chart_->clearMessage();
@@ -5897,6 +5978,7 @@ plotshape(marks, {
   QByteArray timeZoneId_ = QTimeZone::systemTimeZoneId();
   qint64 lastRangeStartMs_ = 0;
   qint64 lastRangeEndMs_ = 0;
+  qint64 replayLoadCursorMs_ = 0;
   int lastRangeFirstIndex_ = -1;
   int lastRangeLastIndex_ = -1;
   bool dark_ = true;
