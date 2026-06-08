@@ -12,7 +12,7 @@
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "strategy": "n_in_range_variant",
   "symbol": "XAUUSD",
   "interval": "1m",
@@ -21,6 +21,30 @@
 ```
 
 旧版事件数组仍兼容，但新策略建议全部返回对象格式。
+
+## 协议版本变更
+
+### v2
+
+- `position.pnl` 改为 `position.totalR`。`totalR` 表示该持仓按分批平仓比例加权后的总 R，不是每次平仓 R 的简单累加。
+- `position.tp1`、`position.tp2` 改为 `position.tps` 数组。策略可以只给一个 TP，也可以给超过两个 TP。
+- 新增 `position.remark`，用于承载策略对持仓区块的文字说明。旧的 `background`、`signal` 解释字段不再推荐使用，统一迁移到 `remark`。
+- `remark` 可能较长，客户端 hover 面板只展示换行后的预览；如果需要右键复制完整备注或结构化说明，请同时放入 `position.data`。
+- 客户端仍兼容读取旧的 `pnl/tp1/tp2`，但新接入策略必须按 v2 输出 `totalR/tps`。
+
+`totalR` 计算示例：
+
+如果一笔交易分两次平仓：50% 仓位在 `+1R` 平仓，50% 仓位在 `+3R` 平仓，则：
+
+```text
+totalR = 1 * 0.5 + 3 * 0.5 = 2R
+```
+
+不能计算成：
+
+```text
+1R + 3R = 4R
+```
 
 ## 基础概念
 
@@ -102,7 +126,7 @@
 | `lossFill` | string | 亏损区块填充色。 |
 | `entryLine` | string | Entry 线颜色。 |
 | `slLine` | string | SL 线颜色。 |
-| `tpLine` | string | TP1 / TP2 线颜色。 |
+| `tpLine` | string | 所有 TP 线颜色。 |
 | `fillOpacity` | number | 盈亏区域透明度。 |
 
 ## line / polyline / ray
@@ -127,6 +151,9 @@
 - `line` 和 `polyline` 都会按 `points` 顺序连接。
 - `text` 会显示在最后一个点附近。
 - 只要所有点的时间范围与当前可见范围有交集，就参与绘制。
+- 鼠标 hover 到线段附近时，线段会加粗高亮，并显示每个 `points` 点位的价格。
+- 左键点击线段会切换常亮模式；再次点击同一线段会取消常亮。
+- 常亮状态按 `id` 记录，因此线段 `id` 必须稳定。接口刷新后同一 `id` 会继续保持常亮。
 
 ### 注意事项
 
@@ -390,7 +417,7 @@
 
 ### 用途
 
-用于画完整持仓区块，包括 entry、SL、TP1、TP2、盈利区、亏损区、hover 和右键复制。
+用于画完整持仓区块，包括 entry、SL、任意数量 TP、盈利区、亏损区、totalR、remark、hover 和右键复制。
 
 ### 字段
 
@@ -402,19 +429,22 @@
 | `exitTime` | number | 否 | 平仓/结束时间。也可用 `to` 兜底；缺失时前端延续到最新 K 线后。 |
 | `entry` | number | 是 | 开仓价格。 |
 | `sl` | number | 推荐 | 止损价格。没有 SL 时不会显示亏损区，也无法计算 1R。 |
-| `tp1` | number | 否 | 第一目标价，画虚线。 |
-| `tp2` | number | 否 | 第二目标价，画实线。 |
+| `tps` | number[] | 否 | 目标价数组。可以是 1 个、2 个或更多 TP，例如 `[4505, 4510, 4518]`。也兼容对象数组如 `[{"price":4505}]`。 |
 | `quantity` | number | 否 | 数量，用于复制/展示。 |
 | `amount` | number | 否 | 金额，用于业务数据。 |
+| `totalR` | number | 否 | 按每次平仓比例加权后的总 R，用于 hover 展示和无 `data` 时的复制 JSON。正数按盈利色显示，负数按亏损色显示。 |
+| `remark` | string | 否 | 策略备注/说明。内容可以较长，前端会在持仓 hover 面板中换行展示并截断预览。 |
 | `data` | object | 推荐 | 右键复制优先复制该对象。 |
 
 ### 渲染行为
 
-- Long：`tp1/tp2` 应高于 entry，`sl` 应低于 entry。
-- Short：`tp1/tp2` 应低于 entry，`sl` 应高于 entry。
+- Long：`tps` 中有效目标价应高于 entry，`sl` 应低于 entry。
+- Short：`tps` 中有效目标价应低于 entry，`sl` 应高于 entry。
 - 盈利区使用 `profitFill`，亏损区使用 `lossFill`。
-- `tp1` 使用虚线，`tp2` 使用实线。
-- `markerVisible` 开启时，会在 entry 位置画 L/S 标记。
+- `tps` 前面的目标位使用虚线，最后一个目标位使用实线。
+- 会在 entry 位置画 L/S 标记；该标记跟随 position 所属 layer group 的显隐状态。
+- hover 持仓区块时会展示 entry、SL、1R TP、所有 TP 对应的 R、Total R 和 `remark`。
+- `remark` 较长时只在 hover 面板中显示预览；完整备注建议同时放进 `data`，用于右键复制。
 - 右键点击持仓区块可复制信息。
 
 ### 右键复制
@@ -427,7 +457,8 @@
 {
   "entry": 4500.0,
   "sl": 4495.0,
-  "1r_tp": 4505.0
+  "1r_tp": 4505.0,
+  "totalR": 2.0
 }
 ```
 
@@ -438,8 +469,10 @@
 - `id` 必须稳定，建议用订单 ID 或 `position-{entryTime}-{side}`。
 - 不要额外输出 entry/sl/tp 的 priceLine，除非你明确需要重复强调；`position` 已经会画这些线。
 - 已平仓仓位应给 `exitTime`，否则区块会延续到最新时间附近。
-- `tp1/tp2` 不符合 long/short 方向时可能不会形成有效盈利区。
+- `tps` 不符合 long/short 方向时可能不会形成有效盈利区。
+- `totalR` 必须按每次平仓比例加权计算。例如 30% 在 1R、30% 在 2R、40% 在 -0.5R，则 `totalR = 1*0.3 + 2*0.3 + (-0.5)*0.4 = 0.7R`。
 - `data` 不参与渲染，只用于复制，因此可以包含策略名、原因、K线切片、信号详情等。
+- 不要再为持仓区块输出旧的 `background`、`signal` 字段；需要给策略保存解释性信息时使用 `remark`，需要完整业务结构时使用 `data`。
 
 ### 示例
 
@@ -453,10 +486,11 @@
   "exitTime": 1780008600000,
   "entry": 4500.0,
   "sl": 4495.0,
-  "tp1": 4505.0,
-  "tp2": 4510.0,
+  "tps": [4505.0, 4510.0, 4518.0],
   "quantity": 1,
   "amount": 1000,
+  "totalR": 2.15,
+  "remark": "IFVG continuation entry; higher timeframe remains bullish; partial exit was filled near TP1.",
   "style": {
     "profitFill": "#20c997",
     "lossFill": "#ef5f78",
@@ -469,6 +503,9 @@
     "entry": 4500.0,
     "sl": 4495.0,
     "1r_tp": 4505.0,
+    "tps": [4505.0, 4510.0, 4518.0],
+    "totalR": 2.15,
+    "remark": "IFVG continuation entry; higher timeframe remains bullish; partial exit was filled near TP1.",
     "reason": "IFVG continuation entry"
   }
 }
@@ -478,7 +515,7 @@
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "strategy": "example_strategy",
   "symbol": "XAUUSD",
   "interval": "1m",
@@ -522,13 +559,17 @@
       "exitTime": 1780008600000,
       "entry": 4508.0,
       "sl": 4503.0,
-      "tp1": 4513.0,
-      "tp2": 4518.0,
+      "tps": [4513.0, 4518.0],
+      "totalR": 1.5,
+      "remark": "Breakout continuation after iFVG confirmation.",
       "zIndex": 20,
       "data": {
         "entry": 4508.0,
         "sl": 4503.0,
-        "1r_tp": 4513.0
+        "1r_tp": 4513.0,
+        "tps": [4513.0, 4518.0],
+        "totalR": 1.5,
+        "remark": "Breakout continuation after iFVG confirmation."
       }
     }
   ]

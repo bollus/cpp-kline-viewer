@@ -992,6 +992,9 @@ private:
       parsedLayers_.clear();
       layerGroupOrder_.clear();
       layerGroupVisible_.clear();
+      hoveredLineLayerId_.clear();
+      selectedLineLayerIds_.clear();
+      lineLayerHitboxes_.clear();
     }
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
       return a.ms < b.ms;
@@ -1011,6 +1014,8 @@ public:
     parsedLayers_.clear();
     layerGroupOrder_.clear();
     rangeEndByKey_.clear();
+    hoveredLineLayerId_.clear();
+    lineLayerHitboxes_.clear();
     if (value.isObject() && value.toObject().value("layers").isArray()) {
       parseOverlayLayers(value.toObject().value("layers").toArray());
       update();
@@ -1057,6 +1062,9 @@ public:
     rebuildIndicatorsNow();
     hoveredIndex_ = -1;
     hoveredPositionIndex_ = -1;
+    hoveredLineLayerId_.clear();
+    selectedLineLayerIds_.clear();
+    lineLayerHitboxes_.clear();
     messageText_ = message;
     emit visibleRangeChanged(0, 0, -1, -1);
     update();
@@ -1253,6 +1261,7 @@ protected:
     }
     hoveredIndex_ = indexAt(mousePos_.x());
     hoveredPositionIndex_ = positionHitboxAt(event->position());
+    hoveredLineLayerId_ = lineLayerAt(event->position());
     if (hoveredIndex_ >= 0 && hoveredIndex_ < candleCount()) {
       emit hoveredCandleChanged(&candles_[hoveredIndex_]);
     } else {
@@ -1264,6 +1273,7 @@ protected:
   void leaveEvent(QEvent *) override {
     hoveredIndex_ = -1;
     hoveredPositionIndex_ = -1;
+    hoveredLineLayerId_.clear();
     hasMouse_ = false;
     emit hoveredCandleChanged(nullptr);
     update();
@@ -1289,6 +1299,16 @@ protected:
     if (toggleLayerAt(event->position())) {
       update();
       return;
+    }
+    if (annotationTool_ == AnnotationTool::None) {
+      const QString lineLayerId = lineLayerAt(event->position());
+      if (!lineLayerId.isEmpty()) {
+        if (selectedLineLayerIds_.contains(lineLayerId)) selectedLineLayerIds_.remove(lineLayerId);
+        else selectedLineLayerIds_.insert(lineLayerId);
+        hoveredLineLayerId_ = lineLayerId;
+        update();
+        return;
+      }
     }
     if (annotationTool_ == AnnotationTool::None) {
       selectedAnnotation_ = annotationAt(event->position());
@@ -1611,16 +1631,23 @@ private:
     double bottom = std::numeric_limits<double>::quiet_NaN();
     double entry = std::numeric_limits<double>::quiet_NaN();
     double sl = std::numeric_limits<double>::quiet_NaN();
-    double tp1 = std::numeric_limits<double>::quiet_NaN();
-    double tp2 = std::numeric_limits<double>::quiet_NaN();
     double quantity = std::numeric_limits<double>::quiet_NaN();
     double amount = std::numeric_limits<double>::quiet_NaN();
+    double totalR = std::numeric_limits<double>::quiet_NaN();
+    QVector<double> tps;
     QString side;
     QString shape;
     QString text;
     QString anchor;
+    QString remark;
     QJsonObject data;
     OverlayStyle style;
+  };
+
+  struct LineLayerHitbox {
+    QString id;
+    int zIndex = 0;
+    QPolygonF points;
   };
 
   bool layerGroupEnabled(const OverlayLayer &layer) const {
@@ -1660,17 +1687,71 @@ private:
     }
   }
 
+  QPen highlightedLinePen(const OverlayStyle &style) const {
+    QPen pen(withOpacity(style.stroke, 1.0), std::min(10, std::max(2, style.strokeWidth + 2)));
+    if (!style.dash.isEmpty()) pen.setDashPattern(style.dash);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    return pen;
+  }
+
+  QString pointPriceText(double price) const {
+    if (!std::isfinite(price)) return "--";
+    const double absPrice = std::abs(price);
+    const int precision = absPrice >= 100 ? 2 : (absPrice >= 1 ? 4 : 6);
+    return QString::number(price, 'f', precision);
+  }
+
+  void drawLinePointPriceLabels(QPainter &p, const OverlayLayer &layer, const QPolygonF &screenPoints) {
+    if (screenPoints.isEmpty()) return;
+    p.save();
+    p.setFont(numberFont(std::max(10, layer.style.fontSize), QFont::DemiBold));
+    const QFontMetrics fm(p.font());
+    const QColor fill = dark_ ? QColor(9, 13, 12, 232) : QColor(255, 253, 247, 238);
+    const QColor border = withOpacity(layer.style.stroke, 0.95);
+    const QRectF visiblePlot = plotRect().adjusted(-4, -4, 4, 4);
+    for (int i = 0; i < screenPoints.size() && i < layer.points.size(); ++i) {
+      if (!visiblePlot.contains(screenPoints[i])) continue;
+      const QString label = pointPriceText(layer.points[i].price);
+      const QSize size = fm.size(Qt::TextSingleLine, label);
+      QRectF rect(screenPoints[i].x() + 7, screenPoints[i].y() + (i % 2 == 0 ? -26 : 8), size.width() + 12, 20);
+      const QRectF plot = plotRect().adjusted(2, 2, -2, -2);
+      if (rect.right() > plot.right()) rect.moveRight(plot.right());
+      if (rect.left() < plot.left()) rect.moveLeft(plot.left());
+      if (rect.top() < plot.top()) rect.moveTop(screenPoints[i].y() + 8);
+      if (rect.bottom() > plot.bottom()) rect.moveBottom(screenPoints[i].y() - 8);
+      p.setPen(QPen(border, 1));
+      p.setBrush(fill);
+      p.drawRect(rect);
+      p.setPen(border);
+      p.drawText(rect, Qt::AlignCenter, label);
+    }
+    p.restore();
+  }
+
+  void registerLineLayerHitbox(const OverlayLayer &layer, const QPolygonF &screenPoints) {
+    if (screenPoints.size() < 2) return;
+    LineLayerHitbox hitbox;
+    hitbox.id = layer.id;
+    hitbox.zIndex = layer.zIndex;
+    hitbox.points = screenPoints;
+    lineLayerHitboxes_.push_back(hitbox);
+  }
+
   void drawGenericLineLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
     if (layer.points.size() < 2) return;
-    p.setPen(layerPen(layer.style));
     QPolygonF points;
     for (const OverlayPoint &point : layer.points) points << pointAtTime(point.time, point.price, minPrice, maxPrice);
+    const bool emphasized = hoveredLineLayerId_ == layer.id || selectedLineLayerIds_.contains(layer.id);
+    p.setPen(emphasized ? highlightedLinePen(layer.style) : layerPen(layer.style));
     p.drawPolyline(points);
+    registerLineLayerHitbox(layer, points);
     if (!layer.text.isEmpty()) {
       p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
-      p.setPen(withOpacity(layer.style.textColor, layer.style.strokeOpacity));
+      p.setPen(withOpacity(emphasized ? layer.style.stroke : layer.style.textColor, emphasized ? 1.0 : layer.style.strokeOpacity));
       p.drawText(points.last() + QPointF(6, -6), layer.text);
     }
+    if (emphasized) drawLinePointPriceLabels(p, layer, points);
   }
 
   void drawGenericBoxLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
@@ -1765,23 +1846,27 @@ private:
     const bool isLong = layer.side != "short";
     const double entry = layer.entry;
     const double sl = layer.sl;
-    const double tp1 = layer.tp1;
-    const double tp2 = layer.tp2;
     if (std::isfinite(sl) && (isLong ? sl < entry : sl > entry)) {
       drawRangeArea(p, start, end, entry, sl, withOpacity(layer.style.lossFill, layer.style.fillOpacity), minPrice, maxPrice);
       drawLineAt(p, start, end, sl, withOpacity(layer.style.slLine, 0.95), Qt::SolidLine, minPrice, maxPrice);
     }
-    const double rewardBoundary = std::isfinite(tp2) ? tp2 : tp1;
+    double rewardBoundary = std::numeric_limits<double>::quiet_NaN();
+    for (const double tp : layer.tps) {
+      if (!std::isfinite(tp) || !(isLong ? tp > entry : tp < entry)) continue;
+      if (!std::isfinite(rewardBoundary) || std::abs(tp - entry) > std::abs(rewardBoundary - entry)) rewardBoundary = tp;
+    }
     if (std::isfinite(rewardBoundary) && (isLong ? rewardBoundary > entry : rewardBoundary < entry)) {
       drawRangeArea(p, start, end, entry, rewardBoundary, withOpacity(layer.style.profitFill, layer.style.fillOpacity), minPrice, maxPrice);
     }
-    if (std::isfinite(tp1)) drawLineAt(p, start, end, tp1, withOpacity(layer.style.tpLine, 0.82), Qt::DashLine, minPrice, maxPrice);
-    if (std::isfinite(tp2) && (!std::isfinite(tp1) || std::abs(tp2 - tp1) > 1e-9)) drawLineAt(p, start, end, tp2, withOpacity(layer.style.tpLine, 0.95), Qt::SolidLine, minPrice, maxPrice);
-    drawLineAt(p, start, end, entry, withOpacity(layer.style.entryLine, 0.96), Qt::SolidLine, minPrice, maxPrice);
-    if (markerVisible_) {
-      const QString label = layer.text.isEmpty() ? (isLong ? "L" : "S") : layer.text;
-      drawBadgeMarker(p, start, entry, isLong, isLong ? up() : down(), label, minPrice, maxPrice);
+    for (int i = 0; i < layer.tps.size(); ++i) {
+      const double tp = layer.tps[i];
+      if (!std::isfinite(tp)) continue;
+      const bool last = i == layer.tps.size() - 1;
+      drawLineAt(p, start, end, tp, withOpacity(layer.style.tpLine, last ? 0.95 : 0.82), last ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
     }
+    drawLineAt(p, start, end, entry, withOpacity(layer.style.entryLine, 0.96), Qt::SolidLine, minPrice, maxPrice);
+    const QString label = layer.text.isEmpty() ? (isLong ? "L" : "S") : layer.text;
+    drawBadgeMarker(p, start, entry, isLong, isLong ? up() : down(), label, minPrice, maxPrice);
     registerGenericPositionHitbox(layer, start, end, minPrice, maxPrice);
   }
 
@@ -2586,6 +2671,32 @@ private:
     return {layerTime(object, "time"), layerNumber(object, "price")};
   }
 
+  QVector<double> parsePositionTargets(const QJsonObject &object) const {
+    QVector<double> targets;
+    auto addTarget = [&](double price) {
+      if (!std::isfinite(price)) return;
+      for (const double existing : targets) {
+        if (std::abs(existing - price) < 1e-9) return;
+      }
+      targets.push_back(price);
+    };
+    QJsonArray array = object.value("tps").toArray();
+    if (array.isEmpty()) array = object.value("targets").toArray();
+    for (const QJsonValue &value : array) {
+      if (value.isDouble() || value.isString()) {
+        bool ok = false;
+        const double price = value.isString() ? value.toString().toDouble(&ok) : value.toDouble();
+        if (!value.isString() || ok) addTarget(price);
+      } else if (value.isObject()) {
+        const QJsonObject target = value.toObject();
+        addTarget(layerNumber(target, "price", layerNumber(target, "tp")));
+      }
+    }
+    addTarget(layerNumber(object, "tp1"));
+    addTarget(layerNumber(object, "tp2"));
+    return targets;
+  }
+
   void parseOverlayLayers(const QJsonArray &layers) {
     QSet<QString> seenGroups;
     parsedLayers_.clear();
@@ -2611,14 +2722,15 @@ private:
       layer.bottom = layerNumber(object, "bottom");
       layer.entry = layerNumber(object, "entry");
       layer.sl = layerNumber(object, "sl");
-      layer.tp1 = layerNumber(object, "tp1");
-      layer.tp2 = layerNumber(object, "tp2");
+      layer.tps = parsePositionTargets(object);
       layer.quantity = layerNumber(object, "quantity");
       layer.amount = layerNumber(object, "amount");
+      layer.totalR = layerNumber(object, "totalR", layerNumber(object, "total_r", layerNumber(object, "pnl")));
       layer.side = object.value("side").toString().trimmed().toLower();
       layer.shape = object.value("shape").toString("circle").trimmed().toLower();
       layer.text = object.value("text").toString();
       layer.anchor = object.value("anchor").toString("center").trimmed().toLower();
+      layer.remark = object.value("remark").toString();
       layer.data = object.value("data").toObject();
       layer.style = parseLayerStyle(object.value("style").toObject());
       for (const QJsonValue &pointValue : object.value("points").toArray()) {
@@ -2641,6 +2753,7 @@ private:
 
   void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
     positionHitboxes_.clear();
+    lineLayerHitboxes_.clear();
     if (candles_.isEmpty()) return;
     p.save();
     p.setClipRect(plotRect());
@@ -3234,10 +3347,6 @@ private:
       p.drawText(QRectF(40, y - 16, 170, 20), Qt::AlignVCenter | Qt::AlignLeft, name);
       y += 24;
     };
-    row(rangeVisible_, "震荡区间");
-    row(nVisible_, "N字结构");
-    row(ninVisible_, "N-IN / N-InverseK");
-    row(ifvgVisible_, "iFVG");
     row(indicatorEngine_.fvgCircleSettings().enabled, "FVG Circle");
     for (const IndicatorScript &script : indicatorEngine_.scripts()) {
       row(script.enabled, script.name);
@@ -3245,8 +3354,6 @@ private:
     for (const QString &group : layerGroupOrder_) {
       row(layerGroupVisible_.value(group, true), group);
     }
-    row(orderVisible_, "持仓视图");
-    row(markerVisible_, "订单标注");
   }
 
   void drawEyeIcon(QPainter &p, const QRectF &rect, bool visible) {
@@ -3281,15 +3388,44 @@ private:
     double entry = std::numeric_limits<double>::quiet_NaN();
     double sl = std::numeric_limits<double>::quiet_NaN();
     double oneRtp = std::numeric_limits<double>::quiet_NaN();
-    double tp1R = std::numeric_limits<double>::quiet_NaN();
-    double tp2R = std::numeric_limits<double>::quiet_NaN();
-    double pnl = std::numeric_limits<double>::quiet_NaN();
+    QVector<double> targetRs;
+    double totalR = std::numeric_limits<double>::quiet_NaN();
     double quantity = std::numeric_limits<double>::quiet_NaN();
-    QString signalType;
-    QString backgroundType;
-    QString backgroundDirection;
+    QString remark;
     QJsonObject copyData;
   };
+
+  double distanceToSegment(const QPointF &point, const QPointF &a, const QPointF &b) const {
+    const double dx = b.x() - a.x();
+    const double dy = b.y() - a.y();
+    const double lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 1e-9) return std::hypot(point.x() - a.x(), point.y() - a.y());
+    const double t = std::clamp(((point.x() - a.x()) * dx + (point.y() - a.y()) * dy) / lengthSquared, 0.0, 1.0);
+    const QPointF projection(a.x() + t * dx, a.y() + t * dy);
+    return std::hypot(point.x() - projection.x(), point.y() - projection.y());
+  }
+
+  QString lineLayerAt(const QPointF &point) const {
+    if (!plotRect().contains(point)) return {};
+    QString bestId;
+    int bestZ = std::numeric_limits<int>::min();
+    double bestDistance = std::numeric_limits<double>::infinity();
+    constexpr double hitDistance = 8.0;
+    for (const LineLayerHitbox &hitbox : lineLayerHitboxes_) {
+      if (hitbox.points.size() < 2) continue;
+      double distance = std::numeric_limits<double>::infinity();
+      for (int i = 1; i < hitbox.points.size(); ++i) {
+        distance = std::min(distance, distanceToSegment(point, hitbox.points[i - 1], hitbox.points[i]));
+      }
+      if (distance > hitDistance) continue;
+      if (hitbox.zIndex > bestZ || (hitbox.zIndex == bestZ && distance < bestDistance)) {
+        bestId = hitbox.id;
+        bestZ = hitbox.zIndex;
+        bestDistance = distance;
+      }
+    }
+    return bestId;
+  }
 
   void registerGenericPositionHitbox(const OverlayLayer &layer, qint64 start, qint64 end, double minPrice, double maxPrice) {
     QVector<double> prices;
@@ -3298,8 +3434,7 @@ private:
     };
     add(layer.entry);
     add(layer.sl);
-    add(layer.tp1);
-    add(layer.tp2);
+    for (const double tp : layer.tps) add(tp);
     if (prices.size() < 2) return;
     const auto [minIt, maxIt] = std::minmax_element(prices.begin(), prices.end());
     QRectF rect(pointAtTime(start, *minIt, minPrice, maxPrice), pointAtTime(end, *maxIt, minPrice, maxPrice));
@@ -3315,9 +3450,14 @@ private:
     hitbox.sl = layer.sl;
     const double risk = std::isfinite(layer.sl) ? std::abs(layer.entry - layer.sl) : std::numeric_limits<double>::quiet_NaN();
     if (std::isfinite(risk) && risk > 0) hitbox.oneRtp = layer.side == "short" ? layer.entry - risk : layer.entry + risk;
-    hitbox.tp1R = std::isfinite(layer.tp1) && risk > 0 ? std::abs(layer.tp1 - layer.entry) / risk : std::numeric_limits<double>::quiet_NaN();
-    hitbox.tp2R = std::isfinite(layer.tp2) && risk > 0 ? std::abs(layer.tp2 - layer.entry) / risk : std::numeric_limits<double>::quiet_NaN();
+    if (std::isfinite(risk) && risk > 0) {
+      for (const double tp : layer.tps) {
+        if (std::isfinite(tp)) hitbox.targetRs.push_back(std::abs(tp - layer.entry) / risk);
+      }
+    }
+    hitbox.totalR = layer.totalR;
     hitbox.quantity = layer.quantity;
+    hitbox.remark = layer.remark;
     hitbox.copyData = layer.data;
     positionHitboxes_.push_back(hitbox);
   }
@@ -3349,13 +3489,9 @@ private:
       const double risk = std::abs(entry - sl);
       if (risk > 0) hitbox.oneRtp = position.direction == "LONG" ? entry + risk : entry - risk;
     }
-    hitbox.tp1R = std::isfinite(tp1) && risk > 0 ? std::abs(tp1 - entry) / risk : std::numeric_limits<double>::quiet_NaN();
-    hitbox.tp2R = std::isfinite(exitPrice) && risk > 0 ? std::abs(exitPrice - entry) / risk : std::numeric_limits<double>::quiet_NaN();
-    hitbox.pnl = position.totalPnl;
+    if (std::isfinite(tp1) && risk > 0) hitbox.targetRs.push_back(std::abs(tp1 - entry) / risk);
+    if (std::isfinite(exitPrice) && risk > 0) hitbox.targetRs.push_back(std::abs(exitPrice - entry) / risk);
     hitbox.quantity = position.quantity;
-    hitbox.signalType = position.signalType;
-    hitbox.backgroundType = position.backgroundType;
-    hitbox.backgroundDirection = position.backgroundDirection;
     positionHitboxes_.push_back(hitbox);
   }
 
@@ -3379,6 +3515,19 @@ private:
 
   QString jsonNumber(double value) const {
     return std::isfinite(value) ? QString::number(value, 'g', 15) : "null";
+  }
+
+  QString jsonString(const QString &value) const {
+    QJsonArray array;
+    array.append(value);
+    const QString encoded = QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact));
+    return encoded.mid(1, encoded.size() - 2);
+  }
+
+  QString jsonNumberArray(const QVector<double> &values) const {
+    QStringList parts;
+    for (const double value : values) parts << jsonNumber(value);
+    return "[" + parts.join(", ") + "]";
   }
 
   QString positionCopyJson(const PositionHitbox &hitbox) const {
@@ -3406,8 +3555,11 @@ private:
       "    \"entry\": %5,\n"
       "    \"sl\": %6,\n"
       "    \"1r_tp\": %7,\n"
+      "    \"target_rs\": %8,\n"
+      "    \"totalR\": %9,\n"
+      "    \"remark\": %10,\n"
       "    \"kline\": [\n"
-      "%8\n"
+      "%11\n"
       "    ]\n"
       "}"
     ).arg(
@@ -3418,6 +3570,9 @@ private:
       jsonNumber(hitbox.entry),
       jsonNumber(hitbox.sl),
       jsonNumber(hitbox.oneRtp),
+      jsonNumberArray(hitbox.targetRs),
+      jsonNumber(hitbox.totalR),
+      hitbox.remark.isEmpty() ? QString("null") : jsonString(hitbox.remark),
       candleLines.join(",\n")
     );
   }
@@ -3425,48 +3580,32 @@ private:
   bool toggleLayerAt(const QPointF &point) {
     const int customCount = indicatorEngine_.scripts().size();
     const int layerGroupCount = layerGroupOrder_.size();
-    const int totalRows = 7 + customCount + layerGroupCount;
+    const int totalRows = 1 + customCount + layerGroupCount;
     if (point.x() < 8 || point.x() > 230 || point.y() < 10 || point.y() > 14 + totalRows * 24) return false;
     const int row = static_cast<int>((point.y() - 14) / 24);
-    switch (row) {
-      case 0: rangeVisible_ = !rangeVisible_; return true;
-      case 1: nVisible_ = !nVisible_; return true;
-      case 2: ninVisible_ = !ninVisible_; return true;
-      case 3: ifvgVisible_ = !ifvgVisible_; return true;
-      case 4: {
-        FvgCircleSettings settings = indicatorEngine_.fvgCircleSettings();
-        settings.enabled = !settings.enabled;
-        indicatorEngine_.setFvgCircleSettings(settings);
-        rebuildIndicatorsNow();
-        emit fvgCircleVisibilityChanged(settings.enabled);
-        return true;
-      }
-      default: {
-        const int scriptIndex = row - 5;
-        if (scriptIndex >= 0 && scriptIndex < indicatorEngine_.scripts().size()) {
-          const IndicatorScript script = indicatorEngine_.scripts()[scriptIndex];
-          indicatorEngine_.setScriptEnabled(script.id, !script.enabled);
-          rebuildIndicatorsNow();
-          emit customIndicatorVisibilityChanged(script.id, !script.enabled);
-          return true;
-        }
-        const int groupIndex = row - 5 - customCount;
-        if (groupIndex >= 0 && groupIndex < layerGroupOrder_.size()) {
-          const QString group = layerGroupOrder_[groupIndex];
-          layerGroupVisible_.insert(group, !layerGroupVisible_.value(group, true));
-          return true;
-        }
-        if (row == 5 + customCount + layerGroupCount) {
-          orderVisible_ = !orderVisible_;
-          return true;
-        }
-        if (row == 6 + customCount + layerGroupCount) {
-          markerVisible_ = !markerVisible_;
-          return true;
-        }
-        return false;
-      }
+    if (row == 0) {
+      FvgCircleSettings settings = indicatorEngine_.fvgCircleSettings();
+      settings.enabled = !settings.enabled;
+      indicatorEngine_.setFvgCircleSettings(settings);
+      rebuildIndicatorsNow();
+      emit fvgCircleVisibilityChanged(settings.enabled);
+      return true;
     }
+    const int scriptIndex = row - 1;
+    if (scriptIndex >= 0 && scriptIndex < indicatorEngine_.scripts().size()) {
+      const IndicatorScript script = indicatorEngine_.scripts()[scriptIndex];
+      indicatorEngine_.setScriptEnabled(script.id, !script.enabled);
+      rebuildIndicatorsNow();
+      emit customIndicatorVisibilityChanged(script.id, !script.enabled);
+      return true;
+    }
+    const int groupIndex = row - 1 - customCount;
+    if (groupIndex >= 0 && groupIndex < layerGroupOrder_.size()) {
+      const QString group = layerGroupOrder_[groupIndex];
+      layerGroupVisible_.insert(group, !layerGroupVisible_.value(group, true));
+      return true;
+    }
+    return false;
   }
 
   void paintCrosshair(QPainter &p) {
@@ -3503,15 +3642,77 @@ private:
     return std::isfinite(value) ? QString::number(value, 'f', precision) : "--";
   }
 
-  QString formatBackground(const PositionHitbox &hitbox) const {
-    if (hitbox.backgroundType.isEmpty() && hitbox.backgroundDirection.isEmpty()) return "--";
-    return hitbox.backgroundType + (hitbox.backgroundDirection.isEmpty() ? "" : " / " + hitbox.backgroundDirection);
+  QString formatTargetRs(const QVector<double> &targetRs) const {
+    if (targetRs.isEmpty()) return "--";
+    QStringList values;
+    const int visibleCount = std::min(4, static_cast<int>(targetRs.size()));
+    for (int i = 0; i < visibleCount; ++i) {
+      values << QString("TP%1 %2R").arg(i + 1).arg(formatCompact(targetRs[i]));
+    }
+    if (targetRs.size() > visibleCount) values << QString("+%1").arg(targetRs.size() - visibleCount);
+    return values.join(" / ");
+  }
+
+  QStringList wrapTooltipText(const QString &text, const QFontMetrics &fm, int maxWidth, int maxLines) const {
+    QString normalized = text;
+    normalized.replace("\r\n", "\n");
+    normalized.replace('\r', '\n');
+    QStringList lines;
+    bool clipped = false;
+    auto appendLine = [&](const QString &line) {
+      if (lines.size() >= maxLines) {
+        clipped = true;
+        return false;
+      }
+      lines << line;
+      return true;
+    };
+    const QStringList paragraphs = normalized.split('\n');
+    for (const QString &paragraph : paragraphs) {
+      QString line;
+      for (const QChar ch : paragraph) {
+        const QString candidate = line + ch;
+        if (!line.isEmpty() && fm.horizontalAdvance(candidate) > maxWidth) {
+          if (!appendLine(line.trimmed())) break;
+          line = QString(ch);
+        } else {
+          line = candidate;
+        }
+      }
+      if (clipped) break;
+      if (!line.isEmpty() || paragraph.isEmpty()) {
+        if (!appendLine(line.trimmed())) break;
+      }
+    }
+    if (clipped && !lines.isEmpty()) {
+      QString last = lines.last();
+      while (!last.isEmpty() && fm.horizontalAdvance(last + "...") > maxWidth) last.chop(1);
+      lines.last() = last.trimmed() + "...";
+    }
+    return lines;
   }
 
   void paintPositionTooltip(QPainter &p) {
     if (!hasMouse_ || hoveredPositionIndex_ < 0 || hoveredPositionIndex_ >= positionHitboxes_.size()) return;
     const PositionHitbox &hitbox = positionHitboxes_[hoveredPositionIndex_];
-    QRectF panel(mousePos_.x() + 14, mousePos_.y() + 14, 226, 132);
+    const int panelWidth = 340;
+    const int rowHeight = 18;
+    QVector<QPair<QString, QString>> rows;
+    rows << qMakePair(QString("Entry"), formatCompact(hitbox.entry));
+    rows << qMakePair(QString("SL"), formatCompact(hitbox.sl));
+    rows << qMakePair(QString("1R TP"), formatCompact(hitbox.oneRtp));
+    rows << qMakePair(QString("Targets R"), formatTargetRs(hitbox.targetRs));
+    rows << qMakePair(QString("Total R"), std::isfinite(hitbox.totalR) ? QString("%1R").arg(formatCompact(hitbox.totalR)) : QString("--"));
+
+    QFont rowFont = uiFont(11, QFont::Medium);
+    QFont remarkFont = uiFont(10, QFont::Medium);
+    p.setFont(remarkFont);
+    const QStringList remarkLines = hitbox.remark.trimmed().isEmpty()
+      ? QStringList()
+      : wrapTooltipText(hitbox.remark.trimmed(), QFontMetrics(remarkFont), panelWidth - 24, 5);
+    const int remarkHeight = remarkLines.isEmpty() ? 0 : 24 + remarkLines.size() * 16;
+    const int panelHeight = 58 + rows.size() * rowHeight + remarkHeight + 12;
+    QRectF panel(mousePos_.x() + 14, mousePos_.y() + 14, panelWidth, panelHeight);
     panel.moveLeft(std::min(panel.left(), width() - panel.width() - 10));
     panel.moveTop(std::max(10.0, std::min(panel.top(), height() - panel.height() - 10.0)));
     p.setPen(QPen(dark_ ? QColor(230, 226, 211, 46) : QColor(23, 31, 27, 48), 1));
@@ -3530,22 +3731,30 @@ private:
     p.setPen(QPen(dark_ ? QColor(230, 226, 211, 36) : QColor(23, 31, 27, 36), 1));
     p.drawLine(QPointF(panel.left() + 12, panel.top() + 42), QPointF(panel.right() - 12, panel.top() + 42));
 
-    p.setFont(uiFont(10, QFont::Medium));
-    const QStringList labels{"Background", "Signal", "Entry", "TP1 R", "TP2 R", "PNL"};
-    const QStringList values{
-      formatBackground(hitbox),
-      hitbox.signalType.isEmpty() ? "--" : hitbox.signalType,
-      formatCompact(hitbox.entry),
-      std::isfinite(hitbox.tp1R) ? QString("%1R").arg(formatCompact(hitbox.tp1R)) : "--",
-      std::isfinite(hitbox.tp2R) ? QString("%1R").arg(formatCompact(hitbox.tp2R)) : "--",
-      std::isfinite(hitbox.pnl) ? QString::number(hitbox.pnl, 'f', 2) : "--"
-    };
-    for (int i = 0; i < labels.size(); ++i) {
-      const double y = panel.top() + 55 + i * 12;
+    p.setFont(rowFont);
+    double y = panel.top() + 60;
+    for (int i = 0; i < rows.size(); ++i) {
       p.setPen(muted());
-      p.drawText(QPointF(panel.left() + 12, y), labels[i]);
-      p.setPen(i == 5 && std::isfinite(hitbox.pnl) ? (hitbox.pnl >= 0 ? up() : down()) : text());
-      p.drawText(QRectF(panel.left() + 92, y - 10, panel.width() - 104, 13), Qt::AlignRight | Qt::AlignVCenter, values[i]);
+      p.drawText(QPointF(panel.left() + 12, y), rows[i].first);
+      p.setPen(rows[i].first == "Total R" && std::isfinite(hitbox.totalR) ? (hitbox.totalR >= 0 ? up() : down()) : text());
+      p.drawText(QRectF(panel.left() + 96, y - 13, panel.width() - 108, 17), Qt::AlignRight | Qt::AlignVCenter, rows[i].second);
+      y += rowHeight;
+    }
+    if (!remarkLines.isEmpty()) {
+      y += 4;
+      p.setPen(QPen(dark_ ? QColor(230, 226, 211, 28) : QColor(23, 31, 27, 30), 1));
+      p.drawLine(QPointF(panel.left() + 12, y), QPointF(panel.right() - 12, y));
+      y += 16;
+      p.setFont(uiFont(10, QFont::DemiBold));
+      p.setPen(muted());
+      p.drawText(QPointF(panel.left() + 12, y), "Remark");
+      y += 16;
+      p.setFont(remarkFont);
+      p.setPen(text());
+      for (const QString &line : remarkLines) {
+        p.drawText(QRectF(panel.left() + 12, y - 12, panel.width() - 24, 16), Qt::AlignLeft | Qt::AlignVCenter, line);
+        y += 16;
+      }
     }
   }
 
@@ -3611,6 +3820,8 @@ private:
   int rightOffsetBars_ = 40;
   int hoveredIndex_ = -1;
   int hoveredPositionIndex_ = -1;
+  QString hoveredLineLayerId_;
+  QSet<QString> selectedLineLayerIds_;
   bool hasMouse_ = false;
   QPointF mousePos_;
   bool dragging_ = false;
@@ -3631,6 +3842,7 @@ private:
   bool repaintScheduled_ = false;
   bool indicatorRebuildScheduled_ = false;
   QVector<PositionHitbox> positionHitboxes_;
+  QVector<LineLayerHitbox> lineLayerHitboxes_;
   AnnotationTool annotationTool_ = AnnotationTool::None;
   bool magnetEnabled_ = true;
   bool drawingAnnotation_ = false;
