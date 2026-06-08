@@ -989,6 +989,9 @@ private:
     if (clearOverlay) {
       overlayEvents_ = {};
       parsedOverlayEvents_.clear();
+      parsedLayers_.clear();
+      layerGroupOrder_.clear();
+      layerGroupVisible_.clear();
     }
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
       return a.ms < b.ms;
@@ -1002,10 +1005,19 @@ private:
   }
 
 public:
-  void setOverlayEvents(const QJsonArray &events) {
-    overlayEvents_ = events;
+  void setOverlayEvents(const QJsonValue &value) {
+    overlayEvents_ = {};
     parsedOverlayEvents_.clear();
+    parsedLayers_.clear();
+    layerGroupOrder_.clear();
     rangeEndByKey_.clear();
+    if (value.isObject() && value.toObject().value("layers").isArray()) {
+      parseOverlayLayers(value.toObject().value("layers").toArray());
+      update();
+      return;
+    }
+    const QJsonArray events = value.isArray() ? value.toArray() : QJsonArray{};
+    overlayEvents_ = events;
     for (const QJsonValue &value : overlayEvents_) {
       const QJsonObject event = value.toObject();
       parsedOverlayEvents_.push_back({event, parsePayload(event)});
@@ -1040,6 +1052,8 @@ public:
     candles_.clear();
     overlayEvents_ = {};
     parsedOverlayEvents_.clear();
+    parsedLayers_.clear();
+    layerGroupOrder_.clear();
     rebuildIndicatorsNow();
     hoveredIndex_ = -1;
     hoveredPositionIndex_ = -1;
@@ -1558,6 +1572,217 @@ private:
       p.drawRect(body);
     }
     p.restore();
+  }
+
+  struct OverlayPoint {
+    qint64 time = 0;
+    double price = std::numeric_limits<double>::quiet_NaN();
+  };
+
+  struct OverlayStyle {
+    QColor stroke;
+    QColor fill;
+    QColor textColor;
+    QColor profitFill;
+    QColor lossFill;
+    QColor entryLine;
+    QColor slLine;
+    QColor tpLine;
+    int strokeWidth = 1;
+    double strokeOpacity = 1.0;
+    double fillOpacity = 0.35;
+    QVector<qreal> dash;
+    int fontSize = 10;
+  };
+
+  struct OverlayLayer {
+    QString id;
+    QString type;
+    QString group;
+    bool visible = true;
+    int zIndex = 0;
+    QVector<OverlayPoint> points;
+    qint64 from = 0;
+    qint64 to = 0;
+    qint64 entryTime = 0;
+    qint64 exitTime = 0;
+    double price = std::numeric_limits<double>::quiet_NaN();
+    double top = std::numeric_limits<double>::quiet_NaN();
+    double bottom = std::numeric_limits<double>::quiet_NaN();
+    double entry = std::numeric_limits<double>::quiet_NaN();
+    double sl = std::numeric_limits<double>::quiet_NaN();
+    double tp1 = std::numeric_limits<double>::quiet_NaN();
+    double tp2 = std::numeric_limits<double>::quiet_NaN();
+    double quantity = std::numeric_limits<double>::quiet_NaN();
+    double amount = std::numeric_limits<double>::quiet_NaN();
+    QString side;
+    QString shape;
+    QString text;
+    QString anchor;
+    QJsonObject data;
+    OverlayStyle style;
+  };
+
+  bool layerGroupEnabled(const OverlayLayer &layer) const {
+    return layer.visible && layerGroupVisible_.value(layer.group, true);
+  }
+
+  bool layerVisibleInTime(const OverlayLayer &layer) const {
+    qint64 start = 0;
+    qint64 end = 0;
+    if (!layer.points.isEmpty()) {
+      start = layer.points.first().time;
+      end = layer.points.first().time;
+      for (const OverlayPoint &point : layer.points) {
+        start = std::min(start, point.time);
+        end = std::max(end, point.time);
+      }
+    } else {
+      start = layer.from > 0 ? layer.from : layer.entryTime;
+      end = layer.to > 0 ? layer.to : layer.exitTime;
+      if (start <= 0 && layer.price > 0) start = candles_.first().ms;
+      if (end <= 0 && start > 0) end = candles_.last().ms;
+    }
+    if (start <= 0 || end <= 0) return true;
+    return timeWindowVisible(start, end);
+  }
+
+  void paintGenericLayers(QPainter &p, double minPrice, double maxPrice) {
+    p.setRenderHint(QPainter::Antialiasing, true);
+    for (const OverlayLayer &layer : parsedLayers_) {
+      if (!layerGroupEnabled(layer) || !layerVisibleInTime(layer)) continue;
+      if (layer.type == "line" || layer.type == "ray" || layer.type == "polyline") drawGenericLineLayer(p, layer, minPrice, maxPrice);
+      else if (layer.type == "box" || layer.type == "range") drawGenericBoxLayer(p, layer, minPrice, maxPrice);
+      else if (layer.type == "position") drawGenericPositionLayer(p, layer, minPrice, maxPrice);
+      else if (layer.type == "label") drawGenericLabelLayer(p, layer, minPrice, maxPrice);
+      else if (layer.type == "marker") drawGenericMarkerLayer(p, layer, minPrice, maxPrice);
+      else if (layer.type == "priceline") drawGenericPriceLineLayer(p, layer, minPrice, maxPrice);
+    }
+  }
+
+  void drawGenericLineLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+    if (layer.points.size() < 2) return;
+    p.setPen(layerPen(layer.style));
+    QPolygonF points;
+    for (const OverlayPoint &point : layer.points) points << pointAtTime(point.time, point.price, minPrice, maxPrice);
+    p.drawPolyline(points);
+    if (!layer.text.isEmpty()) {
+      p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
+      p.setPen(withOpacity(layer.style.textColor, layer.style.strokeOpacity));
+      p.drawText(points.last() + QPointF(6, -6), layer.text);
+    }
+  }
+
+  void drawGenericBoxLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+    const qint64 from = layer.from > 0 ? layer.from : (layer.points.isEmpty() ? 0 : layer.points.first().time);
+    const qint64 to = layer.to > 0 ? layer.to : (layer.points.size() > 1 ? layer.points.last().time : candles_.last().ms);
+    double top = layer.top;
+    double bottom = layer.bottom;
+    if ((!std::isfinite(top) || !std::isfinite(bottom)) && layer.type == "range" && std::isfinite(layer.price)) {
+      top = layer.price;
+      bottom = layer.price;
+    }
+    if (from <= 0 || to <= 0 || !std::isfinite(top) || !std::isfinite(bottom)) return;
+    if (std::abs(top - bottom) < 1e-9) {
+      drawLineAt(p, from, to, top, withOpacity(layer.style.stroke, layer.style.strokeOpacity), layer.style.dash.isEmpty() ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
+    } else {
+      QRectF rect(pointAtTime(from, top, minPrice, maxPrice), pointAtTime(to, bottom, minPrice, maxPrice));
+      rect = rect.normalized();
+      p.fillRect(rect, withOpacity(layer.style.fill, layer.style.fillOpacity));
+      p.setBrush(Qt::NoBrush);
+      p.setPen(layerPen(layer.style));
+      p.drawRect(rect);
+      const QString text = layer.text.isEmpty() ? layer.group : layer.text;
+      if (!text.isEmpty()) {
+        p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
+        p.setPen(withOpacity(layer.style.textColor, 1.0));
+        p.drawText(rect.topLeft() + QPointF(4, -4), text);
+      }
+    }
+  }
+
+  void drawGenericPriceLineLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+    if (!std::isfinite(layer.price)) return;
+    const qint64 from = layer.from > 0 ? layer.from : candles_.first().ms;
+    const qint64 to = layer.to > 0 ? layer.to : candles_.last().ms + 10 * barIntervalMs();
+    drawLineAt(p, from, to, layer.price, withOpacity(layer.style.stroke, layer.style.strokeOpacity), layer.style.dash.isEmpty() ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
+    if (!layer.text.isEmpty()) {
+      p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
+      p.setPen(withOpacity(layer.style.textColor, 1.0));
+      p.drawText(pointAtTime(to, layer.price, minPrice, maxPrice) + QPointF(6, 4), layer.text);
+    }
+  }
+
+  void drawGenericLabelLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+    const qint64 time = layer.from > 0 ? layer.from : (layer.points.isEmpty() ? 0 : layer.points.first().time);
+    const double price = std::isfinite(layer.price) ? layer.price : (layer.points.isEmpty() ? std::numeric_limits<double>::quiet_NaN() : layer.points.first().price);
+    if (time <= 0 || !std::isfinite(price) || layer.text.isEmpty()) return;
+    const QPointF anchor = pointAtTime(time, price, minPrice, maxPrice);
+    p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
+    const QFontMetrics fm(p.font());
+    QRectF rect(anchor.x() + 6, anchor.y() - 20, fm.horizontalAdvance(layer.text) + 12, 20);
+    if (layer.anchor.contains("center")) rect.moveCenter(anchor);
+    p.setPen(QPen(withOpacity(layer.style.stroke, layer.style.strokeOpacity), 1));
+    p.setBrush(withOpacity(layer.style.fill, std::max(0.78, layer.style.fillOpacity)));
+    p.drawRoundedRect(rect, 3, 3);
+    p.setPen(layer.style.textColor);
+    p.drawText(rect, Qt::AlignCenter, layer.text);
+  }
+
+  void drawGenericMarkerLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+    const qint64 time = layer.from > 0 ? layer.from : (layer.points.isEmpty() ? 0 : layer.points.first().time);
+    const double price = std::isfinite(layer.price) ? layer.price : (layer.points.isEmpty() ? std::numeric_limits<double>::quiet_NaN() : layer.points.first().price);
+    if (time <= 0 || !std::isfinite(price)) return;
+    const QPointF pos = pointAtTime(time, price, minPrice, maxPrice);
+    const QColor color = withOpacity(layer.style.stroke, layer.style.strokeOpacity);
+    p.setPen(QPen(color, 1.25));
+    p.setBrush(color);
+    const double size = std::max(5.0, static_cast<double>(layer.style.fontSize));
+    if (layer.shape == "triangle-up" || layer.shape == "triangle_up") {
+      QPolygonF triangle;
+      triangle << QPointF(pos.x(), pos.y() - size) << QPointF(pos.x() - size * 0.72, pos.y() + size * 0.62) << QPointF(pos.x() + size * 0.72, pos.y() + size * 0.62);
+      p.drawPolygon(triangle);
+    } else if (layer.shape == "triangle-down" || layer.shape == "triangle_down") {
+      QPolygonF triangle;
+      triangle << QPointF(pos.x(), pos.y() + size) << QPointF(pos.x() - size * 0.72, pos.y() - size * 0.62) << QPointF(pos.x() + size * 0.72, pos.y() - size * 0.62);
+      p.drawPolygon(triangle);
+    } else if (layer.shape == "square") {
+      p.drawRect(QRectF(pos.x() - size * 0.55, pos.y() - size * 0.55, size * 1.1, size * 1.1));
+    } else {
+      p.drawEllipse(pos, size * 0.48, size * 0.48);
+    }
+    if (!layer.text.isEmpty()) {
+      p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
+      p.setPen(color);
+      p.drawText(pos + QPointF(size * 0.75, 4), layer.text);
+    }
+  }
+
+  void drawGenericPositionLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+    const qint64 start = layer.entryTime > 0 ? layer.entryTime : layer.from;
+    const qint64 end = layer.exitTime > 0 ? layer.exitTime : (layer.to > 0 ? layer.to : candles_.last().ms + 5 * barIntervalMs());
+    if (start <= 0 || end <= 0 || !std::isfinite(layer.entry)) return;
+    const bool isLong = layer.side != "short";
+    const double entry = layer.entry;
+    const double sl = layer.sl;
+    const double tp1 = layer.tp1;
+    const double tp2 = layer.tp2;
+    if (std::isfinite(sl) && (isLong ? sl < entry : sl > entry)) {
+      drawRangeArea(p, start, end, entry, sl, withOpacity(layer.style.lossFill, layer.style.fillOpacity), minPrice, maxPrice);
+      drawLineAt(p, start, end, sl, withOpacity(layer.style.slLine, 0.95), Qt::SolidLine, minPrice, maxPrice);
+    }
+    const double rewardBoundary = std::isfinite(tp2) ? tp2 : tp1;
+    if (std::isfinite(rewardBoundary) && (isLong ? rewardBoundary > entry : rewardBoundary < entry)) {
+      drawRangeArea(p, start, end, entry, rewardBoundary, withOpacity(layer.style.profitFill, layer.style.fillOpacity), minPrice, maxPrice);
+    }
+    if (std::isfinite(tp1)) drawLineAt(p, start, end, tp1, withOpacity(layer.style.tpLine, 0.82), Qt::DashLine, minPrice, maxPrice);
+    if (std::isfinite(tp2) && (!std::isfinite(tp1) || std::abs(tp2 - tp1) > 1e-9)) drawLineAt(p, start, end, tp2, withOpacity(layer.style.tpLine, 0.95), Qt::SolidLine, minPrice, maxPrice);
+    drawLineAt(p, start, end, entry, withOpacity(layer.style.entryLine, 0.96), Qt::SolidLine, minPrice, maxPrice);
+    if (markerVisible_) {
+      const QString label = layer.text.isEmpty() ? (isLong ? "L" : "S") : layer.text;
+      drawBadgeMarker(p, start, entry, isLong, isLong ? up() : down(), label, minPrice, maxPrice);
+    }
+    registerGenericPositionHitbox(layer, start, end, minPrice, maxPrice);
   }
 
   struct AnnotationPoint {
@@ -2301,12 +2526,134 @@ private:
     });
   }
 
+  double layerNumber(const QJsonObject &object, const QString &name, double fallback = std::numeric_limits<double>::quiet_NaN()) const {
+    const QJsonValue value = object.value(name);
+    if (value.isDouble()) return value.toDouble(fallback);
+    if (value.isString()) {
+      bool ok = false;
+      const double number = value.toString().toDouble(&ok);
+      if (ok) return number;
+    }
+    return fallback;
+  }
+
+  qint64 layerTime(const QJsonObject &object, const QString &name, qint64 fallback = 0) const {
+    const double value = layerNumber(object, name, std::numeric_limits<double>::quiet_NaN());
+    return std::isfinite(value) ? static_cast<qint64>(value) : fallback;
+  }
+
+  QColor layerColor(const QJsonObject &object, const QString &name, const QColor &fallback) const {
+    const QString text = object.value(name).toString().trimmed();
+    if (text.isEmpty()) return fallback;
+    const QColor color(text);
+    return color.isValid() ? color : fallback;
+  }
+
+  QColor withOpacity(QColor color, double opacity) const {
+    color.setAlpha(std::clamp(static_cast<int>(std::round(std::clamp(opacity, 0.0, 1.0) * 255.0)), 0, 255));
+    return color;
+  }
+
+  OverlayStyle parseLayerStyle(const QJsonObject &object) const {
+    OverlayStyle style;
+    style.stroke = layerColor(object, "stroke", dark_ ? QColor("#e6e2d3") : QColor("#374151"));
+    style.fill = layerColor(object, "fill", QColor("#6ed7f6"));
+    style.textColor = layerColor(object, "textColor", dark_ ? QColor("#f4efe3") : QColor("#131916"));
+    style.profitFill = layerColor(object, "profitFill", QColor("#20c997"));
+    style.lossFill = layerColor(object, "lossFill", QColor("#ef5f78"));
+    style.entryLine = layerColor(object, "entryLine", dark_ ? QColor("#f4efe8") : QColor("#374151"));
+    style.slLine = layerColor(object, "slLine", QColor("#ef4444"));
+    style.tpLine = layerColor(object, "tpLine", QColor("#10b981"));
+    style.strokeWidth = std::clamp(static_cast<int>(layerNumber(object, "strokeWidth", 1)), 1, 8);
+    style.strokeOpacity = std::clamp(layerNumber(object, "strokeOpacity", 1.0), 0.0, 1.0);
+    style.fillOpacity = std::clamp(layerNumber(object, "fillOpacity", 0.35), 0.0, 1.0);
+    style.fontSize = std::clamp(static_cast<int>(layerNumber(object, "fontSize", 10)), 8, 22);
+    const QJsonArray dash = object.value("dash").toArray();
+    for (const QJsonValue &value : dash) {
+      const double segment = value.toDouble(0);
+      if (segment > 0) style.dash.push_back(segment);
+    }
+    return style;
+  }
+
+  QPen layerPen(const OverlayStyle &style) const {
+    QPen pen(withOpacity(style.stroke, style.strokeOpacity), style.strokeWidth);
+    if (!style.dash.isEmpty()) pen.setDashPattern(style.dash);
+    return pen;
+  }
+
+  OverlayPoint parseLayerPoint(const QJsonObject &object) const {
+    return {layerTime(object, "time"), layerNumber(object, "price")};
+  }
+
+  void parseOverlayLayers(const QJsonArray &layers) {
+    QSet<QString> seenGroups;
+    parsedLayers_.clear();
+    layerGroupOrder_.clear();
+    for (const QJsonValue &value : layers) {
+      const QJsonObject object = value.toObject();
+      OverlayLayer layer;
+      layer.id = object.value("id").toString().trimmed();
+      if (layer.id.isEmpty()) {
+        layer.id = QString("layer-%1").arg(qHash(QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact))));
+      }
+      layer.type = object.value("type").toString().trimmed().toLower();
+      layer.group = object.value("group").toString("Default").trimmed();
+      if (layer.group.isEmpty()) layer.group = "Default";
+      layer.visible = !object.contains("visible") || object.value("visible").toBool(true);
+      layer.zIndex = static_cast<int>(layerNumber(object, "zIndex", 0));
+      layer.from = layerTime(object, "from");
+      layer.to = layerTime(object, "to");
+      layer.entryTime = layerTime(object, "entryTime", layer.from);
+      layer.exitTime = layerTime(object, "exitTime", layer.to);
+      layer.price = layerNumber(object, "price");
+      layer.top = layerNumber(object, "top");
+      layer.bottom = layerNumber(object, "bottom");
+      layer.entry = layerNumber(object, "entry");
+      layer.sl = layerNumber(object, "sl");
+      layer.tp1 = layerNumber(object, "tp1");
+      layer.tp2 = layerNumber(object, "tp2");
+      layer.quantity = layerNumber(object, "quantity");
+      layer.amount = layerNumber(object, "amount");
+      layer.side = object.value("side").toString().trimmed().toLower();
+      layer.shape = object.value("shape").toString("circle").trimmed().toLower();
+      layer.text = object.value("text").toString();
+      layer.anchor = object.value("anchor").toString("center").trimmed().toLower();
+      layer.data = object.value("data").toObject();
+      layer.style = parseLayerStyle(object.value("style").toObject());
+      for (const QJsonValue &pointValue : object.value("points").toArray()) {
+        const OverlayPoint point = parseLayerPoint(pointValue.toObject());
+        if (point.time > 0 && std::isfinite(point.price)) layer.points.push_back(point);
+      }
+      if (layer.type.isEmpty()) continue;
+      if (!seenGroups.contains(layer.group)) {
+        seenGroups.insert(layer.group);
+        layerGroupOrder_.push_back(layer.group);
+        if (!layerGroupVisible_.contains(layer.group)) layerGroupVisible_.insert(layer.group, true);
+      }
+      parsedLayers_.push_back(layer);
+    }
+    std::sort(parsedLayers_.begin(), parsedLayers_.end(), [](const OverlayLayer &a, const OverlayLayer &b) {
+      if (a.zIndex == b.zIndex) return a.id < b.id;
+      return a.zIndex < b.zIndex;
+    });
+  }
+
   void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
     positionHitboxes_.clear();
-    if (parsedOverlayEvents_.isEmpty() || candles_.isEmpty()) return;
+    if (candles_.isEmpty()) return;
     p.save();
     p.setClipRect(plotRect());
     p.setFont(uiFont(10, QFont::Medium));
+    if (!parsedLayers_.isEmpty()) {
+      paintGenericLayers(p, minPrice, maxPrice);
+      p.restore();
+      return;
+    }
+    if (parsedOverlayEvents_.isEmpty()) {
+      p.restore();
+      return;
+    }
 
     for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
       const QJsonObject event = parsed.event;
@@ -2895,6 +3242,9 @@ private:
     for (const IndicatorScript &script : indicatorEngine_.scripts()) {
       row(script.enabled, script.name);
     }
+    for (const QString &group : layerGroupOrder_) {
+      row(layerGroupVisible_.value(group, true), group);
+    }
     row(orderVisible_, "持仓视图");
     row(markerVisible_, "订单标注");
   }
@@ -2938,7 +3288,39 @@ private:
     QString signalType;
     QString backgroundType;
     QString backgroundDirection;
+    QJsonObject copyData;
   };
+
+  void registerGenericPositionHitbox(const OverlayLayer &layer, qint64 start, qint64 end, double minPrice, double maxPrice) {
+    QVector<double> prices;
+    auto add = [&](double value) {
+      if (std::isfinite(value)) prices.push_back(value);
+    };
+    add(layer.entry);
+    add(layer.sl);
+    add(layer.tp1);
+    add(layer.tp2);
+    if (prices.size() < 2) return;
+    const auto [minIt, maxIt] = std::minmax_element(prices.begin(), prices.end());
+    QRectF rect(pointAtTime(start, *minIt, minPrice, maxPrice), pointAtTime(end, *maxIt, minPrice, maxPrice));
+    rect = rect.normalized();
+    PositionHitbox hitbox;
+    hitbox.rect = rect.adjusted(-2, -2, 2, 2);
+    hitbox.key = layer.id;
+    hitbox.direction = layer.side.toUpper();
+    hitbox.startMs = start;
+    hitbox.endMs = end;
+    hitbox.entryY = pointAtTime(start, layer.entry, minPrice, maxPrice).y();
+    hitbox.entry = layer.entry;
+    hitbox.sl = layer.sl;
+    const double risk = std::isfinite(layer.sl) ? std::abs(layer.entry - layer.sl) : std::numeric_limits<double>::quiet_NaN();
+    if (std::isfinite(risk) && risk > 0) hitbox.oneRtp = layer.side == "short" ? layer.entry - risk : layer.entry + risk;
+    hitbox.tp1R = std::isfinite(layer.tp1) && risk > 0 ? std::abs(layer.tp1 - layer.entry) / risk : std::numeric_limits<double>::quiet_NaN();
+    hitbox.tp2R = std::isfinite(layer.tp2) && risk > 0 ? std::abs(layer.tp2 - layer.entry) / risk : std::numeric_limits<double>::quiet_NaN();
+    hitbox.quantity = layer.quantity;
+    hitbox.copyData = layer.data;
+    positionHitboxes_.push_back(hitbox);
+  }
 
   void registerPositionHitbox(const PositionShape &position, qint64 end, double entry, double sl, double tp1, double exitPrice, double minPrice, double maxPrice) {
     QVector<double> prices;
@@ -3000,6 +3382,9 @@ private:
   }
 
   QString positionCopyJson(const PositionHitbox &hitbox) const {
+    if (!hitbox.copyData.isEmpty()) {
+      return QString::fromUtf8(QJsonDocument(hitbox.copyData).toJson(QJsonDocument::Indented)).trimmed();
+    }
     QStringList candleLines;
     for (const Candle &candle : candles_) {
       if (candle.ms < hitbox.startMs || candle.ms > hitbox.endMs) continue;
@@ -3039,7 +3424,8 @@ private:
 
   bool toggleLayerAt(const QPointF &point) {
     const int customCount = indicatorEngine_.scripts().size();
-    const int totalRows = 7 + customCount;
+    const int layerGroupCount = layerGroupOrder_.size();
+    const int totalRows = 7 + customCount + layerGroupCount;
     if (point.x() < 8 || point.x() > 230 || point.y() < 10 || point.y() > 14 + totalRows * 24) return false;
     const int row = static_cast<int>((point.y() - 14) / 24);
     switch (row) {
@@ -3064,11 +3450,17 @@ private:
           emit customIndicatorVisibilityChanged(script.id, !script.enabled);
           return true;
         }
-        if (row == 5 + customCount) {
+        const int groupIndex = row - 5 - customCount;
+        if (groupIndex >= 0 && groupIndex < layerGroupOrder_.size()) {
+          const QString group = layerGroupOrder_[groupIndex];
+          layerGroupVisible_.insert(group, !layerGroupVisible_.value(group, true));
+          return true;
+        }
+        if (row == 5 + customCount + layerGroupCount) {
           orderVisible_ = !orderVisible_;
           return true;
         }
-        if (row == 6 + customCount) {
+        if (row == 6 + customCount + layerGroupCount) {
           markerVisible_ = !markerVisible_;
           return true;
         }
@@ -3200,6 +3592,9 @@ private:
     QJsonObject payload;
   };
   QVector<ParsedOverlayEvent> parsedOverlayEvents_;
+  QVector<OverlayLayer> parsedLayers_;
+  QStringList layerGroupOrder_;
+  QHash<QString, bool> layerGroupVisible_;
   QHash<QString, qint64> rangeEndByKey_;
   IndicatorEngine indicatorEngine_;
   QString messageText_;
@@ -3339,6 +3734,7 @@ public:
     overlayLoadedStartMs_ = 0;
     overlayLoadedEndMs_ = 0;
     overlayEvents_ = {};
+    overlayLayerDocument_ = {};
     if (backendBase_.isEmpty()) {
       emit statusChanged("后端未配置", false);
       return;
@@ -3526,7 +3922,7 @@ signals:
   void candlesLoaded(const QVector<Candle> &candles);
   void olderCandlesLoaded(const QVector<Candle> &candles);
   void replayCandlesLoaded(const QVector<Candle> &candles);
-  void overlayEventsLoaded(const QJsonArray &events);
+  void overlayEventsLoaded(const QJsonValue &events);
   void overlayStrategiesLoaded(const QStringList &strategies);
   void candleUpdated(const Candle &candle);
   void statusChanged(const QString &status, bool live);
@@ -3608,7 +4004,7 @@ private:
 
   void fetchOverlayEvents(qint64 start, qint64 end) {
     if (symbol_.isEmpty() || higherInterval_.isEmpty() || lowerInterval_.isEmpty()) {
-      emit overlayEventsLoaded({});
+      emit overlayEventsLoaded(QJsonArray{});
       return;
     }
     QUrl url(backendBase_ + "/api/strategy-overlay-events");
@@ -3627,21 +4023,29 @@ private:
       if (reply->error() != QNetworkReply::NoError) {
         emit statusChanged("策略事件加载失败", false);
         emit errorMessage(replyErrorMessage(reply, body));
-        emit overlayEventsLoaded({});
+        emit overlayEventsLoaded(QJsonArray{});
         return;
       }
       const QJsonDocument doc = QJsonDocument::fromJson(body);
       if (doc.isObject()) {
-        const QString message = doc.object().value("message").toString();
-        emit statusChanged("策略事件加载失败", false);
-        emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
-        emit overlayEventsLoaded({});
+        const QJsonObject object = doc.object();
+        if (object.value("layers").isArray()) {
+          overlayLoadedStartMs_ = overlayLoadedStartMs_ == 0 ? start : std::min(overlayLoadedStartMs_, start);
+          overlayLoadedEndMs_ = std::max(overlayLoadedEndMs_, end);
+          mergeOverlayLayers(object);
+          emit overlayEventsLoaded(overlayLayerDocument_);
+        } else {
+          const QString message = object.value("message").toString();
+          emit statusChanged("策略事件加载失败", false);
+          emit errorMessage(message.isEmpty() ? "响应格式错误" : message);
+          emit overlayEventsLoaded(QJsonArray{});
+        }
         return;
       }
       if (!doc.isArray()) {
         emit statusChanged("策略事件加载失败", false);
         emit errorMessage("响应格式错误");
-        emit overlayEventsLoaded({});
+        emit overlayEventsLoaded(QJsonArray{});
         return;
       }
       overlayLoadedStartMs_ = overlayLoadedStartMs_ == 0 ? start : std::min(overlayLoadedStartMs_, start);
@@ -3691,6 +4095,29 @@ private:
     }
     overlayEvents_ = {};
     for (const QJsonObject &event : byId) overlayEvents_.append(event);
+  }
+
+  void mergeOverlayLayers(const QJsonObject &document) {
+    if (overlayLayerDocument_.isEmpty()) overlayLayerDocument_ = document;
+    else {
+      for (auto it = document.begin(); it != document.end(); ++it) {
+        if (it.key() != "layers") overlayLayerDocument_.insert(it.key(), it.value());
+      }
+    }
+    QHash<QString, QJsonObject> byId;
+    for (const QJsonValue &value : overlayLayerDocument_.value("layers").toArray()) {
+      const QJsonObject layer = value.toObject();
+      const QString id = layer.value("id").toString(QString::fromUtf8(QJsonDocument(layer).toJson(QJsonDocument::Compact)));
+      byId.insert(id, layer);
+    }
+    for (const QJsonValue &value : document.value("layers").toArray()) {
+      const QJsonObject layer = value.toObject();
+      const QString id = layer.value("id").toString(QString::fromUtf8(QJsonDocument(layer).toJson(QJsonDocument::Compact)));
+      byId.insert(id, layer);
+    }
+    QJsonArray layers;
+    for (const QJsonObject &layer : byId) layers.append(layer);
+    overlayLayerDocument_.insert("layers", layers);
   }
 
   void onSocketMessage(const QString &message) {
@@ -3749,6 +4176,7 @@ private:
   qint64 overlayLoadedStartMs_ = 0;
   qint64 overlayLoadedEndMs_ = 0;
   QJsonArray overlayEvents_;
+  QJsonObject overlayLayerDocument_;
 };
 
 class MainWindow : public QMainWindow {
@@ -5074,8 +5502,11 @@ plotshape(marks, {
       updateIndicatorErrorText();
     });
     connect(&client_, &CandleClient::overlayEventsLoaded, chart_, &ChartWidget::setOverlayEvents);
-    connect(&client_, &CandleClient::overlayEventsLoaded, this, [this](const QJsonArray &events) {
-      events_->setText(QString("Events %1").arg(events.size()));
+    connect(&client_, &CandleClient::overlayEventsLoaded, this, [this](const QJsonValue &events) {
+      int count = 0;
+      if (events.isArray()) count = events.toArray().size();
+      else if (events.isObject()) count = events.toObject().value("layers").toArray().size();
+      events_->setText(QString("Events %1").arg(count));
     });
     connect(&client_, &CandleClient::overlayStrategiesLoaded, this, &MainWindow::populateStrategies);
     connect(&client_, &CandleClient::candleUpdated, this, [this](const Candle &candle) {
@@ -6025,7 +6456,7 @@ plotshape(marks, {
     if (replayPlay_) replayPlay_->setChecked(false);
     chart_->clearMessage();
     chart_->setCandles({});
-    chart_->setOverlayEvents({});
+    chart_->setOverlayEvents(QJsonArray{});
     client_.load(symbol_->text(), interval_->currentText(), selectedStrategyName(), higher_->currentText(), lower_->currentText());
   }
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Q4J Layers Protocol"
+  short_description: "Design and validate Q4J K-Line Viewer overlay layers JSON."
+  default_prompt: "Use the Q4J Layers Protocol skill to create or review strategy overlay layers JSON for Q4J K-Line Viewer."
