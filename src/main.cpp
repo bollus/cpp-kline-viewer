@@ -5701,6 +5701,11 @@ plotshape(marks, {
     connect(&client_, &CandleClient::candlesLoaded, this, [this](const QVector<Candle> &candles) {
       loadedCandles_ = candles;
       normalizeLoadedCandles();
+      if (loadedCandles_.isEmpty()) {
+        chart_->showLoadError("没有K线数据");
+        updateIndicatorErrorText();
+        return;
+      }
       syncReplayBounds();
       applyReplayView();
       updateIndicatorErrorText();
