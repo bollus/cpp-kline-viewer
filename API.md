@@ -106,38 +106,23 @@ Query parameters:
 | --- | --- | --- | --- |
 | `strategy` | yes | `n_in_range_variant` | Strategy name currently sent by the app. |
 | `symbol` | yes | `XAUUSD` | Market symbol. |
-| `higherInterval` | yes | `15m` | Higher strategy interval. |
-| `lowerInterval` | yes | `1m` | Lower strategy interval. |
+| `interval` | yes | `1m` | Current chart interval. Strategy-specific higher/lower intervals are decided by the backend. |
 | `startTime` | yes | `1716900000000` | Requested overlay start time in ms. |
 | `endTime` | yes | `1716903600000` | Requested overlay end time in ms. |
 
 Response:
 
 ```json
-[
-  {
-    "id": "evt-001",
-    "eventType": "RANGE_BOUNDARY_UPDATED",
-    "eventTime": 1716900000000,
-    "direction": "LONG",
-    "price": 2350.90,
-    "payloadJson": "{\"point\":{\"side\":\"HIGH\",\"time\":1716900000000,\"display_time\":1716900000000,\"price\":2358.0}}"
-  }
-]
+{
+  "version": 2,
+  "strategy": "n_in_range_variant",
+  "symbol": "XAUUSD",
+  "interval": "1m",
+  "layers": []
+}
 ```
 
-Top-level event fields:
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string/number | recommended | Unique event id. Used for de-duplication. |
-| `eventType` | string | yes | One of the event types below. |
-| `eventTime` | number | yes | Event time in ms. |
-| `direction` | string | optional | `LONG` or `SHORT`, used by some overlays. |
-| `price` | number | optional | Fallback price for some markers. |
-| `payloadJson` | string | yes | JSON string payload. Must parse to an object. |
-
-`payloadJson` is a JSON-encoded string, not a nested object.
+The `layers` array uses the Q4J layers v2 schema. Supported layer types include `box`, `line`, `polyline`, `ray`, `label`, `marker`, and `position`.
 
 ## Supported Overlay Event Types
 
@@ -353,4 +338,3 @@ To support only basic K-line viewing:
 3. Return `[]` from `GET /api/strategy-overlay-events`.
 
 That is enough for candles, axes, crosshair, OHLC sketch, pan, and zoom.
-

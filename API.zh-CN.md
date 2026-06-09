@@ -106,44 +106,23 @@ WebSocket: ws://127.0.0.1:8080
 | --- | --- | --- | --- |
 | `strategy` | 是 | `n_in_range_variant` | 程序当前固定传这个策略名。 |
 | `symbol` | 是 | `XAUUSD` | 交易品种。 |
-| `higherInterval` | 是 | `15m` | 策略高周期。 |
-| `lowerInterval` | 是 | `1m` | 策略低周期。 |
+| `interval` | 是 | `1m` | 当前图表周期。策略内部需要的高低周期由后端决定。 |
 | `startTime` | 是 | `1716900000000` | 查询开始时间，毫秒。 |
 | `endTime` | 是 | `1716903600000` | 查询结束时间，毫秒。 |
 
 响应：
 
 ```json
-[
-  {
-    "id": "evt-001",
-    "eventType": "RANGE_BOUNDARY_UPDATED",
-    "eventTime": 1716900000000,
-    "direction": "LONG",
-    "price": 2350.90,
-    "payloadJson": "{\"point\":{\"side\":\"HIGH\",\"time\":1716900000000,\"display_time\":1716900000000,\"price\":2358.0}}"
-  }
-]
+{
+  "version": 2,
+  "strategy": "n_in_range_variant",
+  "symbol": "XAUUSD",
+  "interval": "1m",
+  "layers": []
+}
 ```
 
-顶层字段：
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `id` | string/number | 建议 | 事件唯一 ID，用于去重。 |
-| `eventType` | string | 是 | 事件类型。 |
-| `eventTime` | number | 是 | 事件时间，毫秒。 |
-| `direction` | string | 否 | `LONG` 或 `SHORT`。 |
-| `price` | number | 否 | 部分标注的备用价格。 |
-| `payloadJson` | string | 是 | JSON 字符串，程序会再次解析它。 |
-
-注意：`payloadJson` 是 JSON 字符串，不是嵌套对象。
-
-如果不需要策略图层，可以直接返回：
-
-```json
-[]
-```
+`layers` 使用 Q4J layers v2 协议。支持 `box`、`line`、`polyline`、`ray`、`label`、`marker`、`position` 等类型。
 
 ## 支持的事件类型
 
@@ -341,4 +320,3 @@ iFVG 时间字段的 fallback：
 3. `GET /api/strategy-overlay-events` 返回 `[]`。
 
 这样已经可以使用 K 线、坐标轴、十字光标、OHLC 示意图、拖拽和缩放。
-

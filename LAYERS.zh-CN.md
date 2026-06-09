@@ -8,6 +8,18 @@
 
 `GET /api/strategy-overlay-events`
 
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `strategy` | string | 是 | 策略名。 |
+| `symbol` | string | 是 | 交易品种。 |
+| `interval` | string | 是 | 当前图表周期，例如 `1m`、`30m`。 |
+| `startTime` | number | 是 | 查询开始时间，毫秒时间戳。 |
+| `endTime` | number | 是 | 查询结束时间，毫秒时间戳。 |
+
+客户端不再发送 `higherInterval` / `lowerInterval`，策略需要的内部周期应由后端按策略配置或当前 `interval` 自行决定。
+
 推荐返回：
 
 ```json

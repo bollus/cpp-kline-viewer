@@ -999,7 +999,14 @@ private:
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
       return a.ms < b.ms;
     });
-    if (visibleCount_ <= 0) visibleCount_ = std::min(160, candleCount());
+    if (clearOverlay) {
+      const int target = std::min(160, std::max(20, candleCount() + rightOffsetBars_));
+      visibleCount_ = std::max(20, target);
+      manualPriceScale_ = 1.0;
+      manualPriceOffset_ = 0.0;
+    } else if (visibleCount_ <= 0) {
+      visibleCount_ = std::min(160, std::max(20, candleCount() + rightOffsetBars_));
+    }
     visibleStart_ = maxVisibleStart();
     hoveredIndex_ = -1;
     rebuildIndicatorsNow();
@@ -3935,12 +3942,10 @@ public:
     }
   }
 
-  void load(const QString &symbol, const QString &interval, const QString &strategyName, const QString &higherInterval, const QString &lowerInterval) {
+  void load(const QString &symbol, const QString &interval, const QString &strategyName) {
     symbol_ = symbol.trimmed();
     interval_ = interval.trimmed().toLower();
     strategyName_ = normalizedStrategyName(strategyName);
-    higherInterval_ = higherInterval.trimmed().toLower();
-    lowerInterval_ = lowerInterval.trimmed().toLower();
     knownStartMs_ = 0;
     knownEndMs_ = 0;
     overlayLoadedStartMs_ = 0;
@@ -4215,7 +4220,7 @@ private:
   }
 
   void fetchOverlayEvents(qint64 start, qint64 end) {
-    if (symbol_.isEmpty() || higherInterval_.isEmpty() || lowerInterval_.isEmpty()) {
+    if (symbol_.isEmpty() || interval_.isEmpty()) {
       emit overlayEventsLoaded(QJsonArray{});
       return;
     }
@@ -4223,8 +4228,7 @@ private:
     QUrlQuery query;
     query.addQueryItem("strategy", normalizedStrategyName(strategyName_));
     query.addQueryItem("symbol", symbol_);
-    query.addQueryItem("higherInterval", higherInterval_);
-    query.addQueryItem("lowerInterval", lowerInterval_);
+    query.addQueryItem("interval", interval_);
     query.addQueryItem("startTime", QString::number(start));
     query.addQueryItem("endTime", QString::number(end));
     url.setQuery(query);
@@ -4374,8 +4378,6 @@ private:
   QString symbol_;
   QString interval_;
   QString strategyName_ = "n_in_range_variant";
-  QString higherInterval_;
-  QString lowerInterval_;
   QNetworkAccessManager network_;
   QWebSocket socket_;
   QTimer liveWatchdog_;
@@ -4900,12 +4902,10 @@ private:
   void buildSettingsDialog() {
     settingsDialog_ = new QDialog(this);
     settingsDialog_->setWindowTitle("策略设置");
-    settingsDialog_->setMinimumSize(420, 330);
+    settingsDialog_->setMinimumSize(420, 150);
     auto *layout = new QFormLayout(settingsDialog_);
     layout->setContentsMargins(22, 20, 22, 18);
     layout->setSpacing(14);
-    higher_ = new QComboBox;
-    lower_ = new QComboBox;
     strategy_ = new QComboBox;
     strategy_->setEditable(true);
     strategy_->setInsertPolicy(QComboBox::NoInsert);
@@ -4917,36 +4917,12 @@ private:
     strategyCompleter->setFilterMode(Qt::MatchContains);
     strategyCompleter->setCompletionMode(QCompleter::PopupCompletion);
     strategy_->setCompleter(strategyCompleter);
-    higher_->setMinimumHeight(34);
-    lower_->setMinimumHeight(34);
-    higher_->addItems({"5m", "10m", "15m", "30m", "1h", "4h"});
-    lower_->addItems({"1m", "2m", "3m", "5m", "10m", "15m"});
-    fvgCircleEnabled_ = new QCheckBox("显示 FVG Circle");
-    fvgCircleEnabled_->setChecked(chart_->fvgCircleSettings().enabled);
-    fvgCircleN_ = new QSpinBox;
-    fvgCircleN_->setRange(1, 50);
-    fvgCircleN_->setValue(chart_->fvgCircleSettings().leftRightBars);
-    fvgCircleN_->setMinimumHeight(34);
-    fvgCircleMinGapTicks_ = new QSpinBox;
-    fvgCircleMinGapTicks_->setRange(0, 10000);
-    fvgCircleMinGapTicks_->setValue(chart_->fvgCircleSettings().minGapTicks);
-    fvgCircleMinGapTicks_->setMinimumHeight(34);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Apply);
     layout->addRow("策略", strategy_);
-    layout->addRow("高周期", higher_);
-    layout->addRow("低周期", lower_);
-    auto *indicatorTitle = new QLabel("内置指标");
-    indicatorTitle->setObjectName("sectionLabel");
-    layout->addRow(indicatorTitle);
-    layout->addRow("FVG Circle", fvgCircleEnabled_);
-    layout->addRow("Left / Right N", fvgCircleN_);
-    layout->addRow("Min gap ticks", fvgCircleMinGapTicks_);
     layout->addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, settingsDialog_, &QDialog::reject);
     connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] {
-      chart_->setFvgCircleSettings(fvgCircleEnabled_->isChecked(), fvgCircleN_->value(), fvgCircleMinGapTicks_->value());
       saveStrategySettings();
-      saveIndicatorSettings();
       settingsDialog_->accept();
       refresh();
     });
@@ -4998,6 +4974,23 @@ private:
     auto *sideLayout = new QVBoxLayout(sidePanel);
     sideLayout->setContentsMargins(12, 10, 12, 10);
     sideLayout->setSpacing(10);
+    auto *builtinGroup = new QGroupBox("内置指标");
+    auto *builtinLayout = new QFormLayout(builtinGroup);
+    builtinLayout->setContentsMargins(12, 12, 12, 12);
+    builtinLayout->setSpacing(8);
+    fvgCircleEnabled_ = new QCheckBox("显示 FVG Circle");
+    fvgCircleEnabled_->setChecked(chart_->fvgCircleSettings().enabled);
+    fvgCircleN_ = new QSpinBox;
+    fvgCircleN_->setRange(1, 50);
+    fvgCircleN_->setValue(chart_->fvgCircleSettings().leftRightBars);
+    fvgCircleN_->setMinimumHeight(30);
+    fvgCircleMinGapTicks_ = new QSpinBox;
+    fvgCircleMinGapTicks_->setRange(0, 10000);
+    fvgCircleMinGapTicks_->setValue(chart_->fvgCircleSettings().minGapTicks);
+    fvgCircleMinGapTicks_->setMinimumHeight(30);
+    builtinLayout->addRow("FVG Circle", fvgCircleEnabled_);
+    builtinLayout->addRow("Left / Right N", fvgCircleN_);
+    builtinLayout->addRow("Min gap ticks", fvgCircleMinGapTicks_);
     indicatorErrorText_ = new QPlainTextEdit;
     indicatorErrorText_->setObjectName("debugLog");
     indicatorErrorText_->setReadOnly(true);
@@ -5007,6 +5000,7 @@ private:
     auto *hint = new QLabel("指标参数显示在左侧列表中。图表左上角 Layers 也可以直接开关每个指标。");
     hint->setWordWrap(true);
     hint->setObjectName("mutedLabel");
+    sideLayout->addWidget(builtinGroup);
     sideLayout->addWidget(errorLabel);
     sideLayout->addWidget(indicatorErrorText_, 1);
     sideLayout->addWidget(hint);
@@ -5028,6 +5022,15 @@ private:
       loadIndicatorSettings();
       rebuildCustomIndicatorList();
     });
+    auto saveBuiltinIndicatorSettings = [this] {
+      if (!fvgCircleEnabled_ || !fvgCircleN_ || !fvgCircleMinGapTicks_) return;
+      chart_->setFvgCircleSettings(fvgCircleEnabled_->isChecked(), fvgCircleN_->value(), fvgCircleMinGapTicks_->value());
+      saveIndicatorSettings();
+      updateIndicatorErrorText();
+    };
+    connect(fvgCircleEnabled_, &QCheckBox::toggled, this, saveBuiltinIndicatorSettings);
+    connect(fvgCircleN_, QOverload<int>::of(&QSpinBox::valueChanged), this, saveBuiltinIndicatorSettings);
+    connect(fvgCircleMinGapTicks_, QOverload<int>::of(&QSpinBox::valueChanged), this, saveBuiltinIndicatorSettings);
     rebuildCustomIndicatorList();
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     layout->addWidget(buttons);
@@ -5614,6 +5617,9 @@ plotshape(marks, {
   void bindSignals() {
     connect(refresh_, &QPushButton::clicked, this, &MainWindow::refresh);
     connect(symbol_, &QLineEdit::returnPressed, this, &MainWindow::refresh);
+    connect(interval_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+      QTimer::singleShot(0, this, &MainWindow::refresh);
+    });
     connect(minimize_, &QPushButton::clicked, this, &QWidget::showMinimized);
     connect(maximize_, &QPushButton::clicked, this, &MainWindow::toggleMaximized);
     connect(close_, &QPushButton::clicked, this, &QWidget::close);
@@ -6669,7 +6675,7 @@ plotshape(marks, {
     chart_->clearMessage();
     chart_->setCandles({});
     chart_->setOverlayEvents(QJsonArray{});
-    client_.load(symbol_->text(), interval_->currentText(), selectedStrategyName(), higher_->currentText(), lower_->currentText());
+    client_.load(symbol_->text(), interval_->currentText(), selectedStrategyName());
   }
 
   ChartWidget *chart_ = nullptr;
@@ -6681,8 +6687,6 @@ plotshape(marks, {
   QLineEdit *symbol_ = nullptr;
   QComboBox *interval_ = nullptr;
   QComboBox *strategy_ = nullptr;
-  QComboBox *higher_ = nullptr;
-  QComboBox *lower_ = nullptr;
   QComboBox *timeZone_ = nullptr;
   QDateTimeEdit *replayTime_ = nullptr;
   QPushButton *settings_ = nullptr;
