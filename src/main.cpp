@@ -4667,6 +4667,16 @@ private:
     return button;
   }
 
+  QFrame *toolbarGroup(std::initializer_list<QWidget *> widgets) {
+    auto *group = new QFrame;
+    group->setObjectName("toolbarGroup");
+    auto *layout = new QHBoxLayout(group);
+    layout->setContentsMargins(5, 5, 5, 5);
+    layout->setSpacing(5);
+    for (QWidget *widget : widgets) layout->addWidget(widget);
+    return group;
+  }
+
   QFrame *buildAnnotationToolbar() {
     auto *toolbar = new QFrame;
     toolbar->setObjectName("annotationToolbar");
@@ -4765,7 +4775,7 @@ private:
     header_->setMouseTracking(true);
     header_->installEventFilter(this);
     auto *headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(9, 7, 9, 7);
+    headerLayout->setContentsMargins(7, 7, 7, 7);
     headerLayout->setSpacing(8);
 
     symbol_ = new QLineEdit("XAUUSD");
@@ -4823,21 +4833,12 @@ private:
     theme_->setFixedWidth(34);
     refresh_->setFixedWidth(56);
     status_->setFixedWidth(120);
-    headerLayout->addWidget(symbol_);
-    headerLayout->addWidget(interval_);
-    headerLayout->addWidget(settings_);
-    headerLayout->addWidget(indicators_);
-    headerLayout->addWidget(replayToggle_);
-    headerLayout->addWidget(replayTime_);
-    headerLayout->addWidget(replayPlay_);
-    headerLayout->addWidget(replayStep_);
-    headerLayout->addWidget(backend_);
-    headerLayout->addWidget(wsLogButton_);
-    headerLayout->addWidget(updateButton_);
+    headerLayout->addWidget(toolbarGroup({symbol_, interval_}));
+    headerLayout->addWidget(toolbarGroup({settings_, indicators_}));
+    headerLayout->addWidget(toolbarGroup({replayToggle_, replayTime_, replayPlay_, replayStep_}));
+    headerLayout->addWidget(toolbarGroup({backend_, wsLogButton_, updateButton_}));
     headerLayout->addStretch(1);
-    headerLayout->addWidget(theme_);
-    headerLayout->addWidget(refresh_);
-    headerLayout->addWidget(status_);
+    headerLayout->addWidget(toolbarGroup({theme_, refresh_, status_}));
     layout->addWidget(header);
 
     auto *chartRow = new QWidget;
@@ -5814,7 +5815,7 @@ plotshape(marks, {
         min-height: 32px; max-height: 32px;
         background: #101612;
         border: 1px solid rgba(230, 226, 211, 42);
-        border-radius: 3px;
+        border-radius: 6px;
       }
       QLabel#titleBadge {
         min-width: 30px; max-width: 30px; min-height: 20px; max-height: 20px;
@@ -5855,15 +5856,20 @@ plotshape(marks, {
         border-color: rgba(255, 255, 255, 130);
       }
       QFrame#header, QFrame#footer {
-        background: #0e1311;
+        background: #0b100e;
         border: 1px solid rgba(230, 226, 211, 34);
-        border-radius: 3px;
+        border-radius: 6px;
+      }
+      QFrame#toolbarGroup {
+        background: #111815;
+        border: 1px solid rgba(230, 226, 211, 28);
+        border-radius: 6px;
       }
       QWidget#chartRow { background: transparent; }
       QFrame#annotationToolbar {
         background: #0e1311;
         border: 1px solid rgba(230, 226, 211, 34);
-        border-radius: 3px;
+        border-radius: 6px;
       }
       QFrame#annotationDivider {
         background: rgba(230, 226, 211, 34);
@@ -6448,7 +6454,7 @@ plotshape(marks, {
         min-height: 32px; max-height: 32px;
         background: #fbfaf4;
         border: 1px solid rgba(23, 31, 27, 42);
-        border-radius: 3px;
+        border-radius: 6px;
       }
       QLabel#titleBadge {
         min-width: 30px; max-width: 30px; min-height: 20px; max-height: 20px;
@@ -6491,13 +6497,18 @@ plotshape(marks, {
       QFrame#header, QFrame#footer {
         background: #fffdf7;
         border: 1px solid rgba(23, 31, 27, 34);
-        border-radius: 3px;
+        border-radius: 6px;
+      }
+      QFrame#toolbarGroup {
+        background: #f7f8f2;
+        border: 1px solid rgba(23, 31, 27, 24);
+        border-radius: 6px;
       }
       QWidget#chartRow { background: transparent; }
       QFrame#annotationToolbar {
         background: #fffdf7;
         border: 1px solid rgba(23, 31, 27, 34);
-        border-radius: 3px;
+        border-radius: 6px;
       }
       QFrame#annotationDivider {
         background: rgba(23, 31, 27, 34);
@@ -7092,33 +7103,8 @@ plotshape(marks, {
   QPropertyAnimation *windowAnimation_ = nullptr;
 };
 
-void applyPlatformStyle(QApplication &app) {
-#ifdef Q_OS_WIN
-  const QStringList preferredStyles{
-    "FluentWinUI3",
-    "Windows11",
-    "windows11",
-    "windowsvista",
-    "WindowsVista",
-    "windows",
-    "Windows"
-  };
-  const QStringList available = QStyleFactory::keys();
-  for (const QString &styleName : preferredStyles) {
-    if (!available.contains(styleName, Qt::CaseInsensitive)) continue;
-    if (QStyle *style = QStyleFactory::create(styleName)) {
-      app.setStyle(style);
-      return;
-    }
-  }
-#else
-  Q_UNUSED(app);
-#endif
-}
-
 int main(int argc, char **argv) {
   QApplication app(argc, argv);
-  applyPlatformStyle(app);
   loadBundledFonts();
   const QString appFontFamily = systemUiFontFamily();
   QFont appFont(appFontFamily);
