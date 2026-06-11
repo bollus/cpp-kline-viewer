@@ -28,7 +28,7 @@
   "strategy": "n_in_range_variant",
   "symbol": "XAUUSD",
   "interval": "1m",
-  "layers": []
+  "la[CMakeLists.txt](../../../CMakeLists.txt)yers": []
 }
 ```
 

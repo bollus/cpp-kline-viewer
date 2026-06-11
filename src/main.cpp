@@ -999,13 +999,13 @@ private:
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
       return a.ms < b.ms;
     });
-    if (clearOverlay) {
-      const int target = std::min(160, std::max(20, candleCount() + rightOffsetBars_));
-      visibleCount_ = std::max(20, target);
+    if (!candles_.isEmpty() && (clearOverlay || visibleCount_ <= rightOffsetBars_ + 8)) {
+      const int target = std::min(160, std::max(rightOffsetBars_ + 40, candleCount() + rightOffsetBars_));
+      visibleCount_ = std::max(rightOffsetBars_ + 20, target);
       manualPriceScale_ = 1.0;
       manualPriceOffset_ = 0.0;
     } else if (visibleCount_ <= 0) {
-      visibleCount_ = std::min(160, std::max(20, candleCount() + rightOffsetBars_));
+      visibleCount_ = std::min(160, std::max(rightOffsetBars_ + 20, candleCount() + rightOffsetBars_));
     }
     visibleStart_ = maxVisibleStart();
     hoveredIndex_ = -1;
@@ -5783,7 +5783,7 @@ plotshape(marks, {
     chart_->setDark(dark_);
     theme_->setText(dark_ ? "☾" : "☀");
     if (maximize_) maximize_->setText((maximizedAnimated_ || isMaximized()) ? "❐" : "□");
-    const QString css = dark_ ? darkCss() : lightCss();
+    const QString css = (dark_ ? darkCss() : lightCss()) + modernControlsCss(dark_);
     qApp->setStyleSheet(css);
   }
 
@@ -6091,6 +6091,347 @@ plotshape(marks, {
       QDialog {
         background: #0e1311;
         border: 1px solid rgba(230, 226, 211, 34);
+      }
+    )";
+  }
+
+  QString modernControlsCss(bool dark) const {
+    if (dark) {
+      return R"(
+        QToolTip {
+          background: #151d19;
+          color: #f4efe3;
+          border: 1px solid rgba(230, 226, 211, 54);
+          padding: 6px 8px;
+        }
+        QMenu {
+          background: #121916;
+          color: #f4efe3;
+          border: 1px solid rgba(230, 226, 211, 44);
+          padding: 6px;
+        }
+        QMenu::item {
+          min-height: 24px;
+          padding: 4px 28px 4px 10px;
+          border-radius: 3px;
+        }
+        QMenu::item:selected {
+          background: rgba(240, 182, 79, 42);
+          color: #f0b64f;
+        }
+        QAbstractItemView {
+          background: #121916;
+          color: #f4efe3;
+          border: 1px solid rgba(230, 226, 211, 44);
+          outline: 0;
+          selection-background-color: rgba(240, 182, 79, 58);
+          selection-color: #f4efe3;
+        }
+        QAbstractItemView::item {
+          min-height: 26px;
+          padding: 4px 8px;
+        }
+        QAbstractItemView::item:hover {
+          background: rgba(230, 226, 211, 18);
+        }
+        QDialog QPushButton, QMessageBox QPushButton {
+          min-height: 30px;
+          background: #151d19;
+          border: 1px solid rgba(230, 226, 211, 48);
+          border-radius: 4px;
+          padding: 0 14px;
+          color: #f4efe3;
+          font-weight: 500;
+        }
+        QDialog QPushButton:hover, QMessageBox QPushButton:hover {
+          background: #1d2722;
+          border-color: rgba(240, 182, 79, 150);
+        }
+        QDialogButtonBox QPushButton:default {
+          background: #f0b64f;
+          border-color: #f0b64f;
+          color: #111813;
+        }
+        QGroupBox {
+          background: rgba(230, 226, 211, 8);
+          border: 1px solid rgba(230, 226, 211, 32);
+          border-radius: 5px;
+          margin-top: 18px;
+          padding: 12px 10px 10px 10px;
+          font-weight: 600;
+        }
+        QGroupBox::title {
+          subcontrol-origin: margin;
+          subcontrol-position: top left;
+          left: 10px;
+          padding: 0 6px;
+          color: #f0b64f;
+          background: #0e1311;
+        }
+        QCheckBox {
+          spacing: 8px;
+        }
+        QCheckBox::indicator {
+          width: 16px;
+          height: 16px;
+          border: 1px solid rgba(230, 226, 211, 72);
+          border-radius: 3px;
+          background: #111815;
+        }
+        QCheckBox::indicator:hover {
+          border-color: #f0b64f;
+          background: #18211d;
+        }
+        QCheckBox::indicator:checked {
+          background: #f0b64f;
+          border-color: #f0b64f;
+        }
+        QCheckBox::indicator:checked:disabled {
+          background: rgba(240, 182, 79, 90);
+        }
+        QSpinBox, QDoubleSpinBox, QDateTimeEdit, QDialog QSpinBox, QDialog QDoubleSpinBox, QDialog QDateTimeEdit {
+          min-height: 30px;
+          background: #151d19;
+          border: 1px solid rgba(230, 226, 211, 48);
+          border-radius: 4px;
+          padding: 0 8px;
+          color: #f4efe3;
+          selection-background-color: #f0b64f;
+          selection-color: #111813;
+        }
+        QSpinBox:focus, QDoubleSpinBox:focus, QDateTimeEdit:focus {
+          border-color: #f0b64f;
+        }
+        QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+          width: 18px;
+          border: 0;
+          background: transparent;
+        }
+        QSpinBox::up-arrow, QSpinBox::down-arrow, QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {
+          width: 0;
+          height: 0;
+        }
+        QScrollBar:vertical {
+          background: transparent;
+          width: 10px;
+          margin: 2px;
+        }
+        QScrollBar::handle:vertical {
+          background: rgba(230, 226, 211, 58);
+          border-radius: 4px;
+          min-height: 28px;
+        }
+        QScrollBar::handle:vertical:hover {
+          background: rgba(240, 182, 79, 130);
+        }
+        QScrollBar:horizontal {
+          background: transparent;
+          height: 10px;
+          margin: 2px;
+        }
+        QScrollBar::handle:horizontal {
+          background: rgba(230, 226, 211, 58);
+          border-radius: 4px;
+          min-width: 28px;
+        }
+        QScrollBar::handle:horizontal:hover {
+          background: rgba(240, 182, 79, 130);
+        }
+        QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {
+          border: 0;
+          background: transparent;
+          width: 0;
+          height: 0;
+        }
+        QCalendarWidget QWidget {
+          background: #121916;
+          color: #f4efe3;
+        }
+        QCalendarWidget QToolButton {
+          background: transparent;
+          border: 1px solid transparent;
+          border-radius: 3px;
+          color: #f4efe3;
+          padding: 4px 8px;
+        }
+        QCalendarWidget QToolButton:hover {
+          background: rgba(240, 182, 79, 42);
+          border-color: rgba(240, 182, 79, 120);
+        }
+        QCalendarWidget QTableView {
+          background: #0e1311;
+          border: 0;
+          selection-background-color: #f0b64f;
+          selection-color: #111813;
+        }
+      )";
+    }
+    return R"(
+      QToolTip {
+        background: #ffffff;
+        color: #131916;
+        border: 1px solid rgba(23, 31, 27, 50);
+        padding: 6px 8px;
+      }
+      QMenu {
+        background: #fffdf7;
+        color: #131916;
+        border: 1px solid rgba(23, 31, 27, 34);
+        padding: 6px;
+      }
+      QMenu::item {
+        min-height: 24px;
+        padding: 4px 28px 4px 10px;
+        border-radius: 3px;
+      }
+      QMenu::item:selected {
+        background: rgba(240, 182, 79, 58);
+        color: #8f5f0e;
+      }
+      QAbstractItemView {
+        background: #fffdf7;
+        color: #131916;
+        border: 1px solid rgba(23, 31, 27, 34);
+        outline: 0;
+        selection-background-color: rgba(240, 182, 79, 80);
+        selection-color: #131916;
+      }
+      QAbstractItemView::item {
+        min-height: 26px;
+        padding: 4px 8px;
+      }
+      QAbstractItemView::item:hover {
+        background: rgba(23, 31, 27, 10);
+      }
+      QDialog QPushButton, QMessageBox QPushButton {
+        min-height: 30px;
+        background: #f7f8f2;
+        border: 1px solid rgba(23, 31, 27, 42);
+        border-radius: 4px;
+        padding: 0 14px;
+        color: #131916;
+        font-weight: 500;
+      }
+      QDialog QPushButton:hover, QMessageBox QPushButton:hover {
+        background: #ffffff;
+        border-color: rgba(178, 122, 23, 150);
+      }
+      QDialogButtonBox QPushButton:default {
+        background: #f0b64f;
+        border-color: #d79b2f;
+        color: #111813;
+      }
+      QGroupBox {
+        background: rgba(23, 31, 27, 6);
+        border: 1px solid rgba(23, 31, 27, 24);
+        border-radius: 5px;
+        margin-top: 18px;
+        padding: 12px 10px 10px 10px;
+        font-weight: 600;
+      }
+      QGroupBox::title {
+        subcontrol-origin: margin;
+        subcontrol-position: top left;
+        left: 10px;
+        padding: 0 6px;
+        color: #b27a17;
+        background: #fffdf7;
+      }
+      QCheckBox {
+        spacing: 8px;
+      }
+      QCheckBox::indicator {
+        width: 16px;
+        height: 16px;
+        border: 1px solid rgba(23, 31, 27, 62);
+        border-radius: 3px;
+        background: #ffffff;
+      }
+      QCheckBox::indicator:hover {
+        border-color: #b27a17;
+        background: #fffaf0;
+      }
+      QCheckBox::indicator:checked {
+        background: #f0b64f;
+        border-color: #b27a17;
+      }
+      QCheckBox::indicator:checked:disabled {
+        background: rgba(240, 182, 79, 110);
+      }
+      QSpinBox, QDoubleSpinBox, QDateTimeEdit, QDialog QSpinBox, QDialog QDoubleSpinBox, QDialog QDateTimeEdit {
+        min-height: 30px;
+        background: #ffffff;
+        border: 1px solid rgba(23, 31, 27, 42);
+        border-radius: 4px;
+        padding: 0 8px;
+        color: #131916;
+        selection-background-color: #f0b64f;
+        selection-color: #111813;
+      }
+      QSpinBox:focus, QDoubleSpinBox:focus, QDateTimeEdit:focus {
+        border-color: #b27a17;
+      }
+      QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+        width: 18px;
+        border: 0;
+        background: transparent;
+      }
+      QSpinBox::up-arrow, QSpinBox::down-arrow, QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {
+        width: 0;
+        height: 0;
+      }
+      QScrollBar:vertical {
+        background: transparent;
+        width: 10px;
+        margin: 2px;
+      }
+      QScrollBar::handle:vertical {
+        background: rgba(23, 31, 27, 48);
+        border-radius: 4px;
+        min-height: 28px;
+      }
+      QScrollBar::handle:vertical:hover {
+        background: rgba(178, 122, 23, 125);
+      }
+      QScrollBar:horizontal {
+        background: transparent;
+        height: 10px;
+        margin: 2px;
+      }
+      QScrollBar::handle:horizontal {
+        background: rgba(23, 31, 27, 48);
+        border-radius: 4px;
+        min-width: 28px;
+      }
+      QScrollBar::handle:horizontal:hover {
+        background: rgba(178, 122, 23, 125);
+      }
+      QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {
+        border: 0;
+        background: transparent;
+        width: 0;
+        height: 0;
+      }
+      QCalendarWidget QWidget {
+        background: #fffdf7;
+        color: #131916;
+      }
+      QCalendarWidget QToolButton {
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        color: #131916;
+        padding: 4px 8px;
+      }
+      QCalendarWidget QToolButton:hover {
+        background: rgba(240, 182, 79, 58);
+        border-color: rgba(178, 122, 23, 120);
+      }
+      QCalendarWidget QTableView {
+        background: #fffdf7;
+        border: 0;
+        selection-background-color: #f0b64f;
+        selection-color: #111813;
       }
     )";
   }
@@ -6751,8 +7092,33 @@ plotshape(marks, {
   QPropertyAnimation *windowAnimation_ = nullptr;
 };
 
+void applyPlatformStyle(QApplication &app) {
+#ifdef Q_OS_WIN
+  const QStringList preferredStyles{
+    "FluentWinUI3",
+    "Windows11",
+    "windows11",
+    "windowsvista",
+    "WindowsVista",
+    "windows",
+    "Windows"
+  };
+  const QStringList available = QStyleFactory::keys();
+  for (const QString &styleName : preferredStyles) {
+    if (!available.contains(styleName, Qt::CaseInsensitive)) continue;
+    if (QStyle *style = QStyleFactory::create(styleName)) {
+      app.setStyle(style);
+      return;
+    }
+  }
+#else
+  Q_UNUSED(app);
+#endif
+}
+
 int main(int argc, char **argv) {
   QApplication app(argc, argv);
+  applyPlatformStyle(app);
   loadBundledFonts();
   const QString appFontFamily = systemUiFontFamily();
   QFont appFont(appFontFamily);
