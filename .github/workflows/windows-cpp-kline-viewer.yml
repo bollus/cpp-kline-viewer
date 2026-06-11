@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: |
           cmake --version
-          cmake -G
+          cmake --help
           where cl
           where msbuild
 
