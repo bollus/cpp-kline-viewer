@@ -50,7 +50,7 @@ struct IndicatorPlot {
   QString indicatorId;
   QString title;
   QVector<double> values;
-  QColor color = QColor("#f0b64f");
+  QColor color = QColor("#DFD0B8");
   int width = 1;
 };
 
@@ -72,7 +72,7 @@ struct IndicatorLine {
   int to = -1;
   double y1 = std::numeric_limits<double>::quiet_NaN();
   double y2 = std::numeric_limits<double>::quiet_NaN();
-  QColor color = QColor("#f0b64f");
+  QColor color = QColor("#DFD0B8");
   int width = 1;
 };
 
@@ -1444,12 +1444,12 @@ private:
     return maxVisibleStart() - visibleStart_ <= std::max(2.0, rightOffsetBars_ * 0.25);
   }
 
-  QColor bg() const { return dark_ ? QColor("#0b100f") : QColor("#fffefa"); }
-  QColor text() const { return dark_ ? QColor("#f4efe3") : QColor("#131916"); }
-  QColor muted() const { return dark_ ? QColor("#a7b0a8") : QColor("#59635d"); }
-  QColor grid() const { return dark_ ? QColor(230, 226, 211, 20) : QColor(23, 31, 27, 22); }
-  QColor up() const { return QColor("#20c997"); }
-  QColor down() const { return QColor("#ef5f78"); }
+  QColor bg() const { return dark_ ? QColor("#222831") : QColor("#f6f8fb"); }
+  QColor text() const { return dark_ ? QColor("#DFD0B8") : QColor("#172033"); }
+  QColor muted() const { return dark_ ? QColor("#948979") : QColor("#61708a"); }
+  QColor grid() const { return dark_ ? QColor(57, 62, 70, 175) : QColor(211, 218, 230, 190); }
+  QColor up() const { return QColor("#00D0BA"); }
+  QColor down() const { return QColor("#FF5C5C"); }
 
   QFont uiFont(int pixelSize, QFont::Weight weight = QFont::Normal) const {
     QFont f = font();
@@ -1516,6 +1516,11 @@ private:
 
   void paintBackground(QPainter &p) {
     p.fillRect(rect(), bg());
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(dark_ ? QColor(148, 137, 121, 135) : QColor(203, 213, 225, 220), 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
+    p.setRenderHint(QPainter::Antialiasing, false);
   }
 
   void paintChartMessage(QPainter &p) {
@@ -1568,7 +1573,7 @@ private:
         p.setPen(QPen(grid(), 1));
       }
     }
-    p.setPen(QPen(dark_ ? QColor(230, 226, 211, 46) : QColor(23, 31, 27, 48), 1));
+    p.setPen(QPen(dark_ ? QColor(148, 137, 121, 170) : QColor(190, 201, 218, 230), 1));
     p.drawLine(r.topRight(), r.bottomRight());
     p.drawLine(r.bottomLeft(), r.bottomRight());
   }
@@ -1883,7 +1888,7 @@ private:
   };
 
   struct AnnotationStyle {
-    QColor line = QColor("#f0b64f");
+    QColor line = QColor("#DFD0B8");
     QColor fill = QColor("#6ed7f6");
     QColor profit = QColor("#20c997");
     QColor loss = QColor("#ef5f78");
@@ -2009,7 +2014,7 @@ private:
     const int key = static_cast<int>(tool);
     if (annotationDefaultStyles_.contains(key)) return annotationDefaultStyles_.value(key);
     AnnotationStyle style;
-    style.line = dark_ ? QColor("#f0b64f") : QColor("#b27a17");
+    style.line = dark_ ? QColor("#DFD0B8") : QColor("#008f82");
     style.fill = QColor("#6ed7f6");
     style.lineWidth = 1;
     style.opacity = 58;
@@ -2095,7 +2100,7 @@ private:
     }
     if (annotation.tool == AnnotationTool::LongBlock) return QColor(32, 201, 151, dark_ ? 78 : 58);
     if (annotation.tool == AnnotationTool::ShortBlock) return QColor(239, 95, 120, dark_ ? 78 : 58);
-    return dark_ ? QColor(240, 182, 79, 220) : QColor(178, 122, 23, 230);
+    return dark_ ? QColor(223, 208, 184, 220) : QColor(0, 143, 130, 230);
   }
 
   void drawManualAnnotation(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice, bool draft = false, bool selected = false) {
@@ -2237,8 +2242,8 @@ private:
 
   void drawAnnotationSelection(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice) {
     p.save();
-    p.setPen(QPen(QColor("#f0b64f"), 1.4));
-    p.setBrush(QColor("#f0b64f"));
+    p.setPen(QPen(QColor("#DFD0B8"), 1.4));
+    p.setBrush(QColor("#DFD0B8"));
     if (isPositionAnnotation(annotation)) {
       for (const AnnotationPoint &point : positionAnnotationHandlePoints(annotation)) {
         const QPointF pos = annotationPoint(point, minPrice, maxPrice);
@@ -2781,7 +2786,7 @@ private:
       const QJsonObject payload = parsed.payload;
       if (rangeVisible_ && type == "RANGE_BOUNDARY_UPDATED") drawRangeEvent(p, payload, minPrice, maxPrice);
       if (rangeVisible_ && type == "RANGE_BOUNDARY_TOUCHED") drawRangeTouchEvent(p, payload, event, minPrice, maxPrice);
-      if (nVisible_ && type == "HIGH_N_DETECTED") drawNEvent(p, payload.value("n").toObject(), QColor(240, 182, 79, 220), "N", minPrice, maxPrice);
+      if (nVisible_ && type == "HIGH_N_DETECTED") drawNEvent(p, payload.value("n").toObject(), QColor(223, 208, 184, 220), "N", minPrice, maxPrice);
       if (ninVisible_ && type == "HIGH_N_IN_DETECTED") {
         drawNEvent(p, payload.value("base_n").toObject(), QColor(230, 226, 211, 120), "Base", minPrice, maxPrice);
         drawNEvent(p, payload.value("signal_n").toObject(), QColor(39, 212, 177, 220), "N-IN", minPrice, maxPrice);
@@ -3227,7 +3232,7 @@ private:
       drawPositionArea(p, position.entryTime, end, entry, profitBoundary, true, emphasized, minPrice, maxPrice);
     }
     if (tp1BetterThanTp2) {
-      drawRangeArea(p, position.entryTime, end, firstPartialExit, position.exitPrice, QColor(148, 163, 184, 77), minPrice, maxPrice);
+      drawRangeArea(p, position.entryTime, end, firstPartialExit, position.exitPrice, QColor(148, 137, 121, 77), minPrice, maxPrice);
     }
     if (hasTp1) {
       drawLineAt(p, position.entryTime, end, firstPartialExit, QColor(32, 201, 151, 210), Qt::DashLine, minPrice, maxPrice);
@@ -3241,7 +3246,7 @@ private:
       const QString qty = std::isfinite(position.quantity) ? QString(" %1").arg(QString::number(position.quantity, 'g', 4)) : "";
       drawEntryMarker(p, position.entryTime, entry, isLong, isLong ? up() : down(), QString("%1%2").arg(isLong ? "L" : "S", qty), minPrice, maxPrice);
       for (const PositionPartial &partial : position.partials) {
-        drawCircleMarker(p, partial.time, partial.exitPrice, QColor("#f0b64f"), "TP1", minPrice, maxPrice);
+        drawCircleMarker(p, partial.time, partial.exitPrice, QColor("#DFD0B8"), "TP1", minPrice, maxPrice);
       }
       if (position.closed) {
         const QColor color = std::isfinite(position.totalPnl) && position.totalPnl >= 0 ? up() : down();
@@ -3621,13 +3626,13 @@ private:
     visibleRange(minPrice, maxPrice);
     const QRectF r = plotRect();
     const double x = r.left() + (hoveredIndex_ - visibleStart_ + 0.5) * barStep();
-    p.setPen(QPen(dark_ ? QColor(244, 239, 227, 70) : QColor(19, 25, 22, 70), 1, Qt::DashLine));
+    p.setPen(QPen(dark_ ? QColor(223, 208, 184, 95) : QColor(71, 85, 105, 95), 1, Qt::DashLine));
     p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
     if (hasMouse_ && r.contains(mousePos_)) {
       p.drawLine(QPointF(r.left(), mousePos_.y()), QPointF(r.right(), mousePos_.y()));
-      drawAxisTag(p, QRectF(r.right() + 6, mousePos_.y() - 9, 66, 18), QString::number(priceForY(mousePos_.y(), minPrice, maxPrice), 'f', 2), QColor("#f0b64f"));
+      drawAxisTag(p, QRectF(r.right() + 6, mousePos_.y() - 9, 66, 18), QString::number(priceForY(mousePos_.y(), minPrice, maxPrice), 'f', 2), QColor("#DFD0B8"));
       const QString time = formatChartTime(candles_[hoveredIndex_].ms, "MM-dd HH:mm");
-      drawAxisTag(p, QRectF(x - 48, r.bottom() + 6, 96, 18), time, QColor("#f0b64f"));
+      drawAxisTag(p, QRectF(x - 48, r.bottom() + 6, 96, 18), time, QColor("#DFD0B8"));
     }
   }
 
@@ -3635,7 +3640,7 @@ private:
     p.setPen(Qt::NoPen);
     p.setBrush(color);
     p.drawRect(rect);
-    p.setPen(QColor("#111813"));
+    p.setPen(dark_ ? QColor("#222831") : QColor("#111813"));
     p.setFont(uiFont(11, QFont::Medium));
     p.drawText(rect, Qt::AlignCenter, text);
   }
@@ -3776,7 +3781,7 @@ private:
     p.drawRect(panel);
 
     p.setFont(uiFont(11, QFont::DemiBold));
-    p.setPen(QColor("#f0b64f"));
+    p.setPen(QColor("#DFD0B8"));
     p.drawText(panel.adjusted(8, 8, 0, 0), "OHLC 示意图");
 
     const double top = panel.top() + 30;
@@ -3795,7 +3800,7 @@ private:
     p.drawText(QPointF(panel.left() + 10, green ? bodyBottom + 3 : bodyTop + 3), QString("O %1").arg(c.open));
     p.setPen(color);
     p.drawText(QPointF(panel.left() + 10, green ? bodyTop + 3 : bodyBottom + 3), QString("C %1").arg(c.close));
-    p.setPen(QColor("#f0b64f"));
+    p.setPen(QColor("#DFD0B8"));
     p.drawText(QPointF(panel.right() - 72, top + 3), QString("H %1").arg(c.high));
     p.setPen(QColor("#72d9f7"));
     p.drawText(QPointF(panel.right() - 72, bottom + 3), QString("L %1").arg(c.low));
@@ -4605,7 +4610,7 @@ private:
     QPainter p(&pixmap);
     p.setRenderHint(QPainter::Antialiasing, true);
     const QColor fg = dark_ ? QColor("#f4efe3") : QColor("#131916");
-    const QColor accent = QColor("#f0b64f");
+    const QColor accent = QColor("#DFD0B8");
     p.setPen(QPen(fg, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     p.setBrush(Qt::NoBrush);
     if (tool == ChartWidget::AnnotationTool::None) {
@@ -4659,9 +4664,9 @@ private:
     auto *button = new QPushButton;
     button->setObjectName("annotationToolButton");
     button->setCheckable(true);
-    button->setFixedSize(34, 34);
+    button->setFixedSize(42, 42);
     button->setIcon(annotationIcon(tool));
-    button->setIconSize(QSize(24, 24));
+    button->setIconSize(QSize(26, 26));
     button->setToolTip(tip);
     annotationGroup_->addButton(button, static_cast<int>(tool));
     return button;
@@ -4671,8 +4676,8 @@ private:
     auto *group = new QFrame;
     group->setObjectName("toolbarGroup");
     auto *layout = new QHBoxLayout(group);
-    layout->setContentsMargins(5, 5, 5, 5);
-    layout->setSpacing(5);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(8);
     for (QWidget *widget : widgets) layout->addWidget(widget);
     return group;
   }
@@ -4680,10 +4685,10 @@ private:
   QFrame *buildAnnotationToolbar() {
     auto *toolbar = new QFrame;
     toolbar->setObjectName("annotationToolbar");
-    toolbar->setFixedWidth(44);
+    toolbar->setFixedWidth(56);
     auto *layout = new QVBoxLayout(toolbar);
-    layout->setContentsMargins(5, 6, 5, 6);
-    layout->setSpacing(5);
+    layout->setContentsMargins(7, 8, 7, 8);
+    layout->setSpacing(8);
     annotationGroup_ = new QButtonGroup(this);
     annotationGroup_->setExclusive(true);
     auto *cursor = annotationButton("选择/拖动图表", ChartWidget::AnnotationTool::None);
@@ -4704,9 +4709,9 @@ private:
     magnetButton_->setObjectName("annotationToolButton");
     magnetButton_->setCheckable(true);
     magnetButton_->setChecked(true);
-    magnetButton_->setFixedSize(34, 34);
+    magnetButton_->setFixedSize(42, 42);
     magnetButton_->setIcon(magnetIcon());
-    magnetButton_->setIconSize(QSize(24, 24));
+    magnetButton_->setIconSize(QSize(26, 26));
     magnetButton_->setToolTip("磁铁吸附：吸附到最近 K 线 OHLC");
     layout->addWidget(magnetButton_);
     layout->addStretch(1);
@@ -4719,20 +4724,31 @@ private:
     root->setMouseTracking(true);
     root->installEventFilter(this);
     auto *layout = new QVBoxLayout(root);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(8);
+    layout->setContentsMargins(10, 10, 10, 10);
+    layout->setSpacing(10);
     setCentralWidget(root);
 
     titleBar_ = new QFrame;
     titleBar_->setObjectName("titleBar");
     titleBar_->installEventFilter(this);
     auto *titleLayout = new QHBoxLayout(titleBar_);
-    titleLayout->setContentsMargins(10, 0, 6, 0);
-    titleLayout->setSpacing(8);
-    auto *titleBadge = new QLabel("Q4J");
-    titleBadge->setObjectName("titleBadge");
-    auto *titleText = new QLabel("Execution Map");
+    titleLayout->setContentsMargins(12, 0, 10, 0);
+    titleLayout->setSpacing(10);
+    auto *titleIcon = new QLabel;
+    titleIcon->setObjectName("titleIcon");
+    titleIcon->setPixmap(QIcon(":/app-icon.svg").pixmap(34, 34));
+    titleIcon->setFixedSize(38, 38);
+    auto *titleCopy = new QWidget;
+    titleCopy->setObjectName("titleCopy");
+    auto *titleCopyLayout = new QVBoxLayout(titleCopy);
+    titleCopyLayout->setContentsMargins(0, 0, 0, 0);
+    titleCopyLayout->setSpacing(0);
+    auto *titleText = new QLabel("执行地图");
     titleText->setObjectName("titleText");
+    auto *titleSubText = new QLabel("Execution Map");
+    titleSubText->setObjectName("titleSubText");
+    titleCopyLayout->addWidget(titleText);
+    titleCopyLayout->addWidget(titleSubText);
 #ifdef Q_OS_MACOS
     minimize_ = new QPushButton;
     maximize_ = new QPushButton;
@@ -4747,8 +4763,8 @@ private:
     titleLayout->addWidget(minimize_);
     titleLayout->addWidget(maximize_);
     titleLayout->addSpacing(8);
-    titleLayout->addWidget(titleBadge);
-    titleLayout->addWidget(titleText);
+    titleLayout->addWidget(titleIcon);
+    titleLayout->addWidget(titleCopy);
     titleLayout->addStretch(1);
 #else
     minimize_ = new QPushButton("−");
@@ -4760,8 +4776,8 @@ private:
     minimize_->setFixedSize(30, 24);
     maximize_->setFixedSize(30, 24);
     close_->setFixedSize(34, 24);
-    titleLayout->addWidget(titleBadge);
-    titleLayout->addWidget(titleText);
+    titleLayout->addWidget(titleIcon);
+    titleLayout->addWidget(titleCopy);
     titleLayout->addStretch(1);
     titleLayout->addWidget(minimize_);
     titleLayout->addWidget(maximize_);
@@ -4775,8 +4791,8 @@ private:
     header_->setMouseTracking(true);
     header_->installEventFilter(this);
     auto *headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(7, 7, 7, 7);
-    headerLayout->setSpacing(8);
+    headerLayout->setContentsMargins(8, 8, 8, 8);
+    headerLayout->setSpacing(10);
 
     symbol_ = new QLineEdit("XAUUSD");
     symbol_->setObjectName("symbolInput");
@@ -4788,7 +4804,7 @@ private:
     settings_->setObjectName("toolButton");
     indicators_ = new QPushButton("指标");
     indicators_->setObjectName("toolButton");
-    replayToggle_ = new QPushButton("Replay");
+    replayToggle_ = new QPushButton("回放");
     replayToggle_->setObjectName("toolButton");
     replayToggle_->setCheckable(true);
     replayTime_ = new QDateTimeEdit;
@@ -4815,24 +4831,24 @@ private:
     updateButton_->setObjectName("toolButton");
     theme_ = new QPushButton("☾");
     theme_->setObjectName("iconButton");
-    refresh_ = new QPushButton("刷新");
+    refresh_ = new QPushButton("⟳ 刷新");
     refresh_->setObjectName("refreshButton");
     status_ = new QLabel("连接中");
     status_->setObjectName("status");
-    symbol_->setFixedWidth(132);
-    interval_->setFixedWidth(73);
-    settings_->setFixedWidth(75);
-    indicators_->setFixedWidth(52);
-    replayToggle_->setFixedWidth(58);
-    replayTime_->setFixedWidth(142);
-    replayPlay_->setFixedWidth(34);
-    replayStep_->setFixedWidth(34);
-    backend_->setFixedWidth(88);
-    wsLogButton_->setFixedWidth(68);
-    updateButton_->setFixedWidth(76);
-    theme_->setFixedWidth(34);
-    refresh_->setFixedWidth(56);
-    status_->setFixedWidth(120);
+    symbol_->setFixedWidth(156);
+    interval_->setFixedWidth(82);
+    settings_->setFixedWidth(88);
+    indicators_->setFixedWidth(64);
+    replayToggle_->setFixedWidth(74);
+    replayTime_->setFixedWidth(168);
+    replayPlay_->setFixedWidth(44);
+    replayStep_->setFixedWidth(44);
+    backend_->setFixedWidth(104);
+    wsLogButton_->setFixedWidth(78);
+    updateButton_->setFixedWidth(88);
+    theme_->setFixedWidth(44);
+    refresh_->setFixedWidth(82);
+    status_->setFixedWidth(118);
     headerLayout->addWidget(toolbarGroup({symbol_, interval_}));
     headerLayout->addWidget(toolbarGroup({settings_, indicators_}));
     headerLayout->addWidget(toolbarGroup({replayToggle_, replayTime_, replayPlay_, replayStep_}));
@@ -4845,7 +4861,7 @@ private:
     chartRow->setObjectName("chartRow");
     auto *chartRowLayout = new QHBoxLayout(chartRow);
     chartRowLayout->setContentsMargins(0, 0, 0, 0);
-    chartRowLayout->setSpacing(8);
+    chartRowLayout->setSpacing(10);
     annotationToolbar_ = buildAnnotationToolbar();
     chartRowLayout->addWidget(annotationToolbar_);
     chart_ = new ChartWidget;
@@ -4859,11 +4875,11 @@ private:
     footer_->setMouseTracking(true);
     footer_->installEventFilter(this);
     auto *footerLayout = new QHBoxLayout(footer);
-    footerLayout->setContentsMargins(8, 6, 8, 6);
-    footerLayout->setSpacing(16);
-    ohlc_ = new QLabel("O -- H -- L -- C --");
-    range_ = new QLabel("Visible Range --");
-    events_ = new QLabel("Events --");
+    footerLayout->setContentsMargins(14, 7, 10, 7);
+    footerLayout->setSpacing(22);
+    ohlc_ = new QLabel("OHLC:  --   --   --   --");
+    range_ = new QLabel("可视范围： --");
+    events_ = new QLabel("事件数： 0");
     timeZone_ = new QComboBox;
     timeZone_->setObjectName("footerTimeZone");
     timeZone_->setFixedWidth(180);
@@ -5805,44 +5821,45 @@ plotshape(marks, {
 
   QString darkCss() const {
     return R"(
-      QWidget { background: #080c0b; color: #f4efe3; font-family: "Microsoft YaHei UI", "Segoe UI", "PingFang SC", "Noto Sans CJK SC"; font-size: 13px; }
-      QMainWindow { background: #080c0b; }
+      QWidget { background: #222831; color: #DFD0B8; font-family: "Chiron GoRound TC", "Microsoft YaHei UI", "Segoe UI", "PingFang SC", "Noto Sans CJK SC"; font-size: 14px; font-weight: 400; }
+      QMainWindow { background: #222831; }
       QWidget#appShell {
-        background: #080c0b;
-        border: 1px solid rgba(230, 226, 211, 48);
+        background: #222831;
+        border: 1px solid rgba(70, 86, 112, 150);
       }
       QFrame#titleBar {
-        min-height: 32px; max-height: 32px;
-        background: #101612;
-        border: 1px solid rgba(230, 226, 211, 42);
-        border-radius: 6px;
+        min-height: 48px; max-height: 48px;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #222831, stop:1 #393E46);
+        border: 0;
+        border-radius: 8px;
       }
-      QLabel#titleBadge {
-        min-width: 30px; max-width: 30px; min-height: 20px; max-height: 20px;
-        background: #f0b64f;
-        color: #111813;
-        font-size: 11px;
-        font-weight: 500;
-        qproperty-alignment: AlignCenter;
+      QLabel#titleIcon {
+        background: transparent;
       }
       QLabel#titleText {
         background: transparent;
-        color: #f4efe3;
-        font-size: 14px;
-        font-weight: 500;
+        color: #DFD0B8;
+        font-size: 20px;
+        font-weight: 600;
+      }
+      QLabel#titleSubText {
+        background: transparent;
+        color: #948979;
+        font-size: 12px;
+        font-weight: 400;
       }
       QPushButton#windowButton, QPushButton#closeButton {
-        min-height: 24px; max-height: 24px;
+        min-height: 32px; max-height: 32px;
         background: transparent;
         border: 1px solid transparent;
-        border-radius: 2px;
+        border-radius: 6px;
         padding: 0;
-        color: #a7b0a8;
-        font-size: 15px;
-        font-weight: 500;
+        color: #948979;
+        font-size: 18px;
+        font-weight: 400;
       }
-      QPushButton#windowButton:hover { background: rgba(230, 226, 211, 22); border-color: rgba(230, 226, 211, 44); color: #f4efe3; }
-      QPushButton#closeButton:hover { background: #ef5f78; border-color: #ef5f78; color: #111813; }
+      QPushButton#windowButton:hover { background: rgba(148, 137, 121, 24); border-color: rgba(148, 137, 121, 44); color: #DFD0B8; }
+      QPushButton#closeButton:hover { background: #ff5c5c; border-color: #ff5c5c; color: #ffffff; }
       QPushButton#macCloseButton, QPushButton#macMinimizeButton, QPushButton#macMaximizeButton {
         min-width: 13px; max-width: 13px; min-height: 13px; max-height: 13px;
         border-radius: 6px;
@@ -5855,248 +5872,232 @@ plotshape(marks, {
       QPushButton#macCloseButton:hover, QPushButton#macMinimizeButton:hover, QPushButton#macMaximizeButton:hover {
         border-color: rgba(255, 255, 255, 130);
       }
-      QFrame#header, QFrame#footer {
-        background: #0b100e;
-        border: 1px solid rgba(230, 226, 211, 34);
-        border-radius: 6px;
+      QFrame#header {
+        background: rgba(34, 40, 49, 238);
+        border: 1px solid rgba(148, 137, 121, 210);
+        border-radius: 8px;
+      }
+      QFrame#footer {
+        min-height: 38px;
+        background: rgba(34, 40, 49, 238);
+        border: 1px solid rgba(148, 137, 121, 210);
+        border-radius: 8px;
       }
       QFrame#toolbarGroup {
-        background: #111815;
-        border: 1px solid rgba(230, 226, 211, 28);
-        border-radius: 6px;
+        background: rgba(57, 62, 70, 160);
+        border: 1px solid rgba(148, 137, 121, 155);
+        border-radius: 8px;
       }
       QWidget#chartRow { background: transparent; }
       QFrame#annotationToolbar {
-        background: #0e1311;
-        border: 1px solid rgba(230, 226, 211, 34);
-        border-radius: 6px;
+        background: rgba(34, 40, 49, 240);
+        border: 1px solid rgba(148, 137, 121, 210);
+        border-radius: 8px;
       }
       QFrame#annotationDivider {
-        background: rgba(230, 226, 211, 34);
+        background: rgba(148, 137, 121, 150);
         border: 0;
       }
       QFrame#annotationFloatingToolbar {
-        background: rgba(14, 19, 17, 232);
-        border: 1px solid rgba(230, 226, 211, 48);
-        border-radius: 3px;
+        background: rgba(57, 62, 70, 245);
+        border: 1px solid rgba(148, 137, 121, 220);
+        border-radius: 8px;
       }
       QFrame#annotationFloatingToolbar QSpinBox {
-        min-height: 22px; max-height: 22px;
-        background: #151d19;
-        border: 1px solid rgba(230, 226, 211, 44);
-        color: #f4efe3;
+        min-height: 24px; max-height: 24px;
+        background: #393E46;
+        border: 1px solid rgba(148, 137, 121, 190);
+        color: #DFD0B8;
         padding: 0 4px;
       }
       QPushButton#annotationToolButton {
-        min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px;
-        background: transparent;
-        border: 1px solid rgba(230, 226, 211, 30);
-        border-radius: 2px;
+        min-width: 42px; max-width: 42px; min-height: 42px; max-height: 42px;
+        background: rgba(57, 62, 70, 155);
+        border: 1px solid rgba(148, 137, 121, 155);
+        border-radius: 7px;
         padding: 0;
-        color: #d9d4c7;
-        font-size: 15px;
-        font-weight: 500;
+        color: #DFD0B8;
+        font-size: 16px;
+        font-weight: 400;
       }
       QPushButton#annotationToolButton:hover {
-        background: #18211d;
-        border-color: rgba(240, 182, 79, 145);
+        background: rgba(57, 62, 70, 220);
+        border-color: rgba(223, 208, 184, 150);
+        color: #DFD0B8;
       }
       QPushButton#annotationToolButton:checked {
-        background: rgba(240, 182, 79, 42);
-        border-color: #f0b64f;
-        color: #f0b64f;
-      }
-      QWidget#brandBox { background: transparent; }
-      QLabel#brandBadge {
-        min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px;
-        border: 1px solid rgba(240, 182, 79, 150);
-        border-radius: 2px;
-        background: #22251a;
-        color: #f0b64f;
-        font-size: 11px;
-        font-weight: 500;
-        qproperty-alignment: AlignCenter;
-      }
-      QLabel#brandText {
-        background: transparent;
-        color: #f4efe3;
-        font-size: 18px;
-        font-weight: 500;
+        background: rgba(223, 208, 184, 30);
+        border-color: #DFD0B8;
+        color: #DFD0B8;
       }
       QLineEdit, QComboBox, QPushButton {
-        min-height: 30px; max-height: 30px;
-        background: #1f2723;
-        border: 1px solid rgba(230, 226, 211, 64);
-        border-radius: 2px;
-        padding: 0 8px;
+        min-height: 36px; max-height: 36px;
+        background: #393E46;
+        border: 1px solid rgba(148, 137, 121, 190);
+        border-radius: 7px;
+        padding: 0 12px;
+        color: #DFD0B8;
+        font-size: 14px;
         font-weight: 500;
       }
-      QLineEdit#symbolInput { font-size: 14px; font-weight: 500; }
       QLineEdit#symbolInput {
-        min-height: 28px; max-height: 28px;
-        background: #111815;
-        border: 1px solid rgba(230, 226, 211, 42);
-        border-left: 2px solid #f0b64f;
-        border-radius: 1px;
-        padding: 0 9px;
-        color: #f4efe3;
-        selection-background-color: #f0b64f;
-        selection-color: #111813;
+        background: #222831;
+        border-color: rgba(148, 137, 121, 210);
+        padding: 0 14px;
+        selection-background-color: #DFD0B8;
+        selection-color: #222831;
       }
       QComboBox#intervalInput {
-        min-height: 28px; max-height: 28px;
-        background: #151d19;
-        border: 1px solid rgba(230, 226, 211, 38);
-        border-radius: 1px;
-        padding: 0 18px 0 9px;
-        color: #f4efe3;
-        font-size: 13px;
-        font-weight: 500;
+        background: #222831;
+        border-color: rgba(148, 137, 121, 210);
+        padding: 0 28px 0 14px;
       }
       QComboBox#intervalInput::drop-down {
-        width: 16px;
+        width: 26px;
         border: 0;
         background: transparent;
       }
       QComboBox#intervalInput::down-arrow {
         image: none;
-        width: 0;
-        height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 6px solid #948979;
+        width: 0px;
+        height: 0px;
       }
       QPushButton#toolButton {
-        min-height: 28px; max-height: 28px;
-        background: transparent;
-        border: 1px solid rgba(230, 226, 211, 38);
-        border-radius: 1px;
-        padding: 0 9px;
-        color: #d9d4c7;
-        font-size: 13px;
-        font-weight: 500;
+        background: #393E46;
+        border-color: rgba(148, 137, 121, 190);
+        color: #DFD0B8;
       }
       QPushButton#toolButton:hover, QComboBox#intervalInput:hover, QLineEdit#symbolInput:hover {
-        background: #18211d;
-        border-color: rgba(240, 182, 79, 150);
+        background: #393E46;
+        border-color: rgba(223, 208, 184, 150);
       }
       QLineEdit#symbolInput:focus, QComboBox#intervalInput:focus, QPushButton#toolButton:focus {
-        border-color: #f0b64f;
+        border-color: #DFD0B8;
       }
       QDateTimeEdit#replayTime {
-        min-height: 28px; max-height: 28px;
-        background: #151d19;
-        border: 1px solid rgba(230, 226, 211, 38);
-        border-radius: 1px;
-        padding: 0 8px;
-        color: #f4efe3;
-        font-size: 12px;
-        font-weight: 500;
+        min-height: 36px; max-height: 36px;
+        background: #222831;
+        border: 1px solid rgba(148, 137, 121, 210);
+        border-radius: 7px;
+        padding: 0 12px;
+        color: #DFD0B8;
       }
       QDateTimeEdit#replayTime:hover, QDateTimeEdit#replayTime:focus {
-        background: #18211d;
-        border-color: rgba(240, 182, 79, 150);
+        background: #393E46;
+        border-color: rgba(223, 208, 184, 150);
       }
       QPushButton#iconButton {
-        min-height: 28px; max-height: 28px;
-        background: transparent;
-        border: 1px solid rgba(230, 226, 211, 34);
-        border-radius: 1px;
+        min-height: 36px; max-height: 36px;
+        background: #393E46;
+        border: 1px solid rgba(148, 137, 121, 190);
+        border-radius: 7px;
         padding: 0;
-        color: #f0b64f;
-        font-size: 15px;
+        color: #DFD0B8;
+        font-size: 16px;
         font-weight: 500;
       }
-      QPushButton#refreshButton { background: #f0b64f; border-color: #f0b64f; color: #111813; }
       QPushButton#refreshButton {
-        min-height: 28px; max-height: 28px;
-        border-radius: 1px;
-        padding: 0 8px;
-        font-size: 13px;
-        font-weight: 500;
+        min-height: 36px; max-height: 36px;
+        background: rgba(223, 208, 184, 18);
+        border: 1px solid rgba(223, 208, 184, 120);
+        border-radius: 7px;
+        color: #DFD0B8;
+        padding: 0 12px;
+        font-weight: 600;
       }
-      QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #f0b64f; }
+      QPushButton#refreshButton:hover { background: rgba(223, 208, 184, 42); border-color: #DFD0B8; }
+      QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #DFD0B8; }
       QLabel#status {
         background: transparent;
-        color: #a7b0a8;
-        font-size: 13px;
+        color: #DFD0B8;
+        font-size: 14px;
         font-weight: 500;
         qproperty-alignment: AlignCenter;
       }
       QFrame#footer QLabel {
         background: transparent;
-        font-size: 13px;
+        color: #DFD0B8;
+        font-size: 14px;
         font-weight: 500;
       }
       QComboBox#footerTimeZone {
-        min-height: 24px; max-height: 24px;
-        background: #111815;
-        border: 1px solid rgba(230, 226, 211, 34);
-        border-radius: 1px;
-        padding: 0 18px 0 8px;
-        color: #d9d4c7;
-        font-size: 12px;
-        font-weight: 500;
+        min-height: 30px; max-height: 30px;
+        background: #393E46;
+        border: 1px solid rgba(148, 137, 121, 190);
+        border-radius: 7px;
+        padding: 0 28px 0 12px;
+        color: #DFD0B8;
+        font-size: 13px;
       }
       QComboBox#footerTimeZone:hover, QComboBox#footerTimeZone:focus {
-        border-color: rgba(240, 182, 79, 150);
+        border-color: rgba(223, 208, 184, 150);
       }
       QComboBox#footerTimeZone::drop-down {
-        width: 16px;
+        width: 26px;
         border: 0;
         background: transparent;
       }
       QComboBox#footerTimeZone::down-arrow {
         image: none;
-        width: 0;
-        height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 6px solid #948979;
+        width: 0px;
+        height: 0px;
       }
       QDialog QWidget {
         background: transparent;
       }
       QDialog QLabel, QDialog QCheckBox, QDialog QDialogButtonBox {
         background: transparent;
-        font-size: 13px;
+        color: #DFD0B8;
+        font-size: 14px;
         font-weight: 400;
       }
       QDialog QLabel#dialogTitle {
-        color: #f4efe3;
-        font-size: 18px;
+        color: #DFD0B8;
+        font-size: 20px;
         font-weight: 600;
       }
       QDialog QLabel#sectionLabel {
-        color: #f0b64f;
+        color: #DFD0B8;
         font-size: 13px;
         font-weight: 600;
       }
       QDialog QLabel#mutedLabel {
-        color: #a7b0a8;
+        color: #948979;
         font-size: 12px;
       }
       QWidget#indicatorRow {
-        background: rgba(230, 226, 211, 13);
-        border: 1px solid rgba(230, 226, 211, 28);
-        border-radius: 3px;
+        background: rgba(57, 62, 70, 180);
+        border: 1px solid rgba(148, 137, 121, 150);
+        border-radius: 8px;
       }
       QWidget#indicatorParams {
-        background: rgba(230, 226, 211, 8);
-        border-left: 1px solid rgba(240, 182, 79, 90);
+        background: rgba(57, 62, 70, 120);
+        border-left: 1px solid rgba(223, 208, 184, 80);
       }
       QSplitter::handle {
-        background: rgba(230, 226, 211, 24);
+        background: rgba(148, 137, 121, 130);
         width: 1px;
       }
       QDialog QLineEdit, QDialog QComboBox {
-        background: #151d19;
-        border: 1px solid rgba(230, 226, 211, 48);
-        color: #f4efe3;
+        background: #222831;
+        border: 1px solid rgba(148, 137, 121, 190);
+        color: #DFD0B8;
       }
       QDialog QPlainTextEdit {
-        background: #0a0f0d;
-        border: 1px solid rgba(230, 226, 211, 42);
-        color: #f4efe3;
-        font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI";
+        background: #222831;
+        border: 1px solid rgba(148, 137, 121, 170);
+        color: #DFD0B8;
+        font-family: "Cascadia Mono", "Consolas", "Chiron GoRound TC";
       }
       QDialog {
-        background: #0e1311;
-        border: 1px solid rgba(230, 226, 211, 34);
+        background: #222831;
+        border: 1px solid rgba(148, 137, 121, 180);
       }
     )";
   }
@@ -6105,63 +6106,65 @@ plotshape(marks, {
     if (dark) {
       return R"(
         QToolTip {
-          background: #151d19;
-          color: #f4efe3;
-          border: 1px solid rgba(230, 226, 211, 54);
+          background: #222831;
+          color: #DFD0B8;
+          border: 1px solid rgba(148, 137, 121, 210);
           padding: 6px 8px;
         }
         QMenu {
-          background: #121916;
-          color: #f4efe3;
-          border: 1px solid rgba(230, 226, 211, 44);
-          padding: 6px;
+          background: #222831;
+          color: #DFD0B8;
+          border: 1px solid rgba(148, 137, 121, 210);
+          border-radius: 8px;
+          padding: 8px;
         }
         QMenu::item {
-          min-height: 24px;
-          padding: 4px 28px 4px 10px;
-          border-radius: 3px;
+          min-height: 28px;
+          padding: 5px 30px 5px 12px;
+          border-radius: 6px;
         }
         QMenu::item:selected {
-          background: rgba(240, 182, 79, 42);
-          color: #f0b64f;
+          background: rgba(223, 208, 184, 26);
+          color: #DFD0B8;
         }
         QAbstractItemView {
-          background: #121916;
-          color: #f4efe3;
-          border: 1px solid rgba(230, 226, 211, 44);
+          background: #222831;
+          color: #DFD0B8;
+          border: 1px solid rgba(148, 137, 121, 210);
+          border-radius: 8px;
           outline: 0;
-          selection-background-color: rgba(240, 182, 79, 58);
-          selection-color: #f4efe3;
+          selection-background-color: rgba(223, 208, 184, 42);
+          selection-color: #DFD0B8;
         }
         QAbstractItemView::item {
-          min-height: 26px;
-          padding: 4px 8px;
+          min-height: 30px;
+          padding: 5px 10px;
         }
         QAbstractItemView::item:hover {
-          background: rgba(230, 226, 211, 18);
+          background: rgba(148, 137, 121, 18);
         }
         QDialog QPushButton, QMessageBox QPushButton {
-          min-height: 30px;
-          background: #151d19;
-          border: 1px solid rgba(230, 226, 211, 48);
-          border-radius: 4px;
-          padding: 0 14px;
-          color: #f4efe3;
+          min-height: 34px;
+          background: #393E46;
+          border: 1px solid rgba(148, 137, 121, 190);
+          border-radius: 7px;
+          padding: 0 16px;
+          color: #DFD0B8;
           font-weight: 500;
         }
         QDialog QPushButton:hover, QMessageBox QPushButton:hover {
-          background: #1d2722;
-          border-color: rgba(240, 182, 79, 150);
+          background: #393E46;
+          border-color: rgba(223, 208, 184, 150);
         }
         QDialogButtonBox QPushButton:default {
-          background: #f0b64f;
-          border-color: #f0b64f;
-          color: #111813;
+          background: #DFD0B8;
+          border-color: #DFD0B8;
+          color: #222831;
         }
         QGroupBox {
-          background: rgba(230, 226, 211, 8);
-          border: 1px solid rgba(230, 226, 211, 32);
-          border-radius: 5px;
+          background: rgba(57, 62, 70, 150);
+          border: 1px solid rgba(148, 137, 121, 150);
+          border-radius: 8px;
           margin-top: 18px;
           padding: 12px 10px 10px 10px;
           font-weight: 600;
@@ -6171,8 +6174,8 @@ plotshape(marks, {
           subcontrol-position: top left;
           left: 10px;
           padding: 0 6px;
-          color: #f0b64f;
-          background: #0e1311;
+          color: #DFD0B8;
+          background: #222831;
         }
         QCheckBox {
           spacing: 8px;
@@ -6180,33 +6183,33 @@ plotshape(marks, {
         QCheckBox::indicator {
           width: 16px;
           height: 16px;
-          border: 1px solid rgba(230, 226, 211, 72);
-          border-radius: 3px;
-          background: #111815;
+          border: 1px solid rgba(148, 137, 121, 125);
+          border-radius: 4px;
+          background: #222831;
         }
         QCheckBox::indicator:hover {
-          border-color: #f0b64f;
-          background: #18211d;
+          border-color: #DFD0B8;
+          background: #393E46;
         }
         QCheckBox::indicator:checked {
-          background: #f0b64f;
-          border-color: #f0b64f;
+          background: #DFD0B8;
+          border-color: #DFD0B8;
         }
         QCheckBox::indicator:checked:disabled {
-          background: rgba(240, 182, 79, 90);
+          background: rgba(223, 208, 184, 90);
         }
         QSpinBox, QDoubleSpinBox, QDateTimeEdit, QDialog QSpinBox, QDialog QDoubleSpinBox, QDialog QDateTimeEdit {
-          min-height: 30px;
-          background: #151d19;
-          border: 1px solid rgba(230, 226, 211, 48);
-          border-radius: 4px;
-          padding: 0 8px;
-          color: #f4efe3;
-          selection-background-color: #f0b64f;
-          selection-color: #111813;
+          min-height: 34px;
+          background: #222831;
+          border: 1px solid rgba(148, 137, 121, 190);
+          border-radius: 7px;
+          padding: 0 10px;
+          color: #DFD0B8;
+          selection-background-color: #DFD0B8;
+          selection-color: #222831;
         }
         QSpinBox:focus, QDoubleSpinBox:focus, QDateTimeEdit:focus {
-          border-color: #f0b64f;
+          border-color: #DFD0B8;
         }
         QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
           width: 18px;
@@ -6223,12 +6226,12 @@ plotshape(marks, {
           margin: 2px;
         }
         QScrollBar::handle:vertical {
-          background: rgba(230, 226, 211, 58);
+          background: rgba(148, 137, 121, 70);
           border-radius: 4px;
           min-height: 28px;
         }
         QScrollBar::handle:vertical:hover {
-          background: rgba(240, 182, 79, 130);
+          background: rgba(223, 208, 184, 145);
         }
         QScrollBar:horizontal {
           background: transparent;
@@ -6236,12 +6239,12 @@ plotshape(marks, {
           margin: 2px;
         }
         QScrollBar::handle:horizontal {
-          background: rgba(230, 226, 211, 58);
+          background: rgba(148, 137, 121, 70);
           border-radius: 4px;
           min-width: 28px;
         }
         QScrollBar::handle:horizontal:hover {
-          background: rgba(240, 182, 79, 130);
+          background: rgba(223, 208, 184, 145);
         }
         QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {
           border: 0;
@@ -6250,25 +6253,25 @@ plotshape(marks, {
           height: 0;
         }
         QCalendarWidget QWidget {
-          background: #121916;
-          color: #f4efe3;
+          background: #222831;
+          color: #DFD0B8;
         }
         QCalendarWidget QToolButton {
           background: transparent;
           border: 1px solid transparent;
-          border-radius: 3px;
-          color: #f4efe3;
+          border-radius: 6px;
+          color: #DFD0B8;
           padding: 4px 8px;
         }
         QCalendarWidget QToolButton:hover {
-          background: rgba(240, 182, 79, 42);
-          border-color: rgba(240, 182, 79, 120);
+          background: rgba(223, 208, 184, 28);
+          border-color: rgba(223, 208, 184, 130);
         }
         QCalendarWidget QTableView {
-          background: #0e1311;
+          background: #222831;
           border: 0;
-          selection-background-color: #f0b64f;
-          selection-color: #111813;
+          selection-background-color: #DFD0B8;
+          selection-color: #222831;
         }
       )";
     }
@@ -7105,8 +7108,8 @@ plotshape(marks, {
 
 int main(int argc, char **argv) {
   QApplication app(argc, argv);
-  loadBundledFonts();
-  const QString appFontFamily = systemUiFontFamily();
+  const QString bundledFontFamily = loadBundledFonts();
+  const QString appFontFamily = bundledFontFamily.isEmpty() ? systemUiFontFamily() : bundledFontFamily;
   QFont appFont(appFontFamily);
   appFont.setPointSize(10);
   appFont.setWeight(QFont::Normal);
