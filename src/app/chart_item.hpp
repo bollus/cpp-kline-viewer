@@ -4,9 +4,11 @@
 #include <QQuickPaintedItem>
 #include <QQuickWindow>
 #include <QCursor>
+#include <QtQml/qqmlregistration.h>
 
 class ChartItem : public QQuickPaintedItem {
   Q_OBJECT
+  QML_ELEMENT
 
 public:
   enum class AnnotationTool {

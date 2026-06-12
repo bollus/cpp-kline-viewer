@@ -45,8 +45,6 @@ int main(int argc, char **argv) {
 
   QQuickStyle::setStyle("Basic");
 
-  qmlRegisterType<ChartItem>("AlgoHub", 1, 0, "ChartItem");
-
   ThemeProvider theme;
   AppController controller;
   controller.setDark(theme.dark());
@@ -56,8 +54,15 @@ int main(int argc, char **argv) {
   engine.rootContext()->setContextProperty("controller", &controller);
   engine.rootContext()->setContextProperty("theme", &theme);
 
-  engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
-  if (engine.rootObjects().isEmpty()) return -1;
+  QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
+                   [] { qWarning("AlgoHub: failed to create Main.qml root object"); },
+                   Qt::QueuedConnection);
+
+  engine.loadFromModule("AlgoHub", "Main");
+  if (engine.rootObjects().isEmpty()) {
+    qWarning("AlgoHub: QML engine produced no root objects");
+    return -1;
+  }
 
   return app.exec();
 }

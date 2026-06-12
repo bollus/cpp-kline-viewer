@@ -77,7 +77,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force package | Out-Null
           Copy-Item build/Release/q4j_kline_viewer.exe package/ -Force
-          windeployqt --release --compiler-runtime --no-translations package/q4j_kline_viewer.exe
+          windeployqt --release --compiler-runtime --no-translations --qmldir qml package/q4j_kline_viewer.exe
           Copy-Item fonts package/fonts -Recurse -Force
 
       - name: Get app version

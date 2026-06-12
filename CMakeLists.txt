@@ -40,6 +40,21 @@ qt_add_executable(q4j_kline_viewer
   resources/resources.qrc
 )
 
+qt_add_qml_module(q4j_kline_viewer
+  URI AlgoHub
+  VERSION 1.0
+  QML_FILES
+    qml/Main.qml
+    qml/TopBar.qml
+    qml/StatusBar.qml
+    qml/DrawingToolbar.qml
+    qml/ChartToolbar.qml
+    qml/ReplayBar.qml
+    qml/RightSidebar.qml
+    qml/LogPanel.qml
+    qml/IconButton.qml
+)
+
 if(WIN32)
   target_sources(q4j_kline_viewer PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/app.rc)
 endif()

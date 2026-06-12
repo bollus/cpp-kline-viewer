@@ -3,7 +3,6 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
 import QtQuick.Dialogs
-import AlgoHub 1.0
 
 ApplicationWindow {
     id: appWindow

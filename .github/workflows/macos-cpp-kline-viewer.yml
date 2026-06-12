@@ -42,7 +42,7 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Deploy Qt runtime
-        run: macdeployqt build/q4j_kline_viewer.app -verbose=2
+        run: macdeployqt build/q4j_kline_viewer.app -qmldir=qml -verbose=2
 
       - name: Ad-hoc sign app
         run: codesign --force --deep --sign - build/q4j_kline_viewer.app
