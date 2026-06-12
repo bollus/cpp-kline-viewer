@@ -41,6 +41,7 @@ qt_add_executable(q4j_kline_viewer
   src/app/qml_support.hpp
   src/app/models.hpp
   src/app/app_controller.hpp
+  src/app/workspace.hpp
   resources/resources.qrc
 )
 
