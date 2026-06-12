@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets OpenGLWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets OpenGLWidgets Svg)
 find_package(Qt6 QUIET OPTIONAL_COMPONENTS Qml)
 
 set(Q4J_UPDATE_REPO "" CACHE STRING "GitHub repository used by the in-app updater, for example owner/repo")
@@ -63,6 +63,7 @@ target_link_libraries(q4j_kline_viewer
     Qt6::Network
     Qt6::WebSockets
     Qt6::OpenGLWidgets
+    Qt6::Svg
 )
 
 if(Qt6Qml_FOUND)

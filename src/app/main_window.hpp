@@ -3,6 +3,9 @@
 #include "chart_widget.hpp"
 #include "candle_client.hpp"
 
+#include <QtSvg/QSvgRenderer>
+#include <QStatusBar>
+
 class MainWindow : public QMainWindow {
   Q_OBJECT
 
@@ -23,15 +26,15 @@ public:
     loadIndicatorSettings();
     loadDisplaySettings();
     updateLegendSymbol();
+    syncServerForm();
     updateServerInfoLabel();
     loadLayoutSettings();
+    updateStatusBar();
     if (client_.hasConfiguredBackend()) {
       refresh();
-    } else if (showBackendDialog(true)) {
-      saveBackendSettings();
-      refresh();
     } else {
-      status_->setText("○ 后端未配置");
+      setConnectionStatus("后端未配置", false);
+      promptConfigureBackend();
     }
   }
 
@@ -209,6 +212,57 @@ private:
     setGeometry(next);
   }
 
+  // Render an SVG resource into a tinted pixmap. Composition SourceIn keeps the
+  // alpha shape of the icon and recolours every opaque pixel with `color`, so a
+  // single monochrome asset adapts to theme/state colours.
+  QPixmap tintedPixmap(const QString &name, const QColor &color, int px = 22) const {
+    const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+    QSvgRenderer renderer(QString(":/icons/%1.svg").arg(name));
+    QPixmap pm(QSize(px, px) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    if (renderer.isValid()) renderer.render(&p, QRectF(0, 0, px, px));
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(QRect(0, 0, px, px), color);
+    p.end();
+    return pm;
+  }
+
+  // Build a multi-state icon (normal / hover-active / checked) from one asset.
+  QIcon themedIcon(const QString &name, int px = 22) const {
+    const QColor base = dark_ ? Theme::cTextSecondary() : QColor(Theme::lTextSecondary());
+    const QColor active = dark_ ? Theme::cTextPrimary() : QColor(Theme::lTextPrimary());
+    const QColor checked = dark_ ? Theme::cBrandBlue() : QColor(Theme::lBrandBlue());
+    QIcon icon;
+    icon.addPixmap(tintedPixmap(name, base, px), QIcon::Normal, QIcon::Off);
+    icon.addPixmap(tintedPixmap(name, active, px), QIcon::Active, QIcon::Off);
+    icon.addPixmap(tintedPixmap(name, checked, px), QIcon::Normal, QIcon::On);
+    icon.addPixmap(tintedPixmap(name, checked, px), QIcon::Active, QIcon::On);
+    icon.addPixmap(tintedPixmap(name, base, px), QIcon::Disabled, QIcon::Off);
+    return icon;
+  }
+
+  // Track icon-backed buttons so applyTheme() can recolour them on theme switch.
+  // The icon name lives on the widget as a property so tool-group buttons can
+  // swap which glyph they show (e.g. "last used" tool) and still be re-themed.
+  void registerIcon(QAbstractButton *button, const QString &name, int px = 22) {
+    button->setProperty("iconName", name);
+    button->setProperty("iconPx", px);
+    if (!iconButtons_.contains(button)) iconButtons_.append(button);
+    button->setIcon(themedIcon(name, px));
+  }
+
+  void refreshIcons() {
+    for (QAbstractButton *button : iconButtons_) {
+      if (!button) continue;
+      const QString name = button->property("iconName").toString();
+      const int px = button->property("iconPx").toInt();
+      if (!name.isEmpty()) button->setIcon(themedIcon(name, px > 0 ? px : 22));
+    }
+  }
+
   QIcon annotationIcon(ChartWidget::AnnotationTool tool) const {
     QPixmap pixmap(28, 28);
     pixmap.fill(Qt::transparent);
@@ -265,115 +319,142 @@ private:
     return QIcon(pixmap);
   }
 
-  QPushButton *annotationButton(const QString &tip, ChartWidget::AnnotationTool tool) {
-    auto *button = new QPushButton;
+  // A single tool inside a collapsible group. `tool` < 0 marks a placeholder
+  // (reserved in the UI but not wired to chart behaviour yet).
+  struct ToolItem {
+    QString icon;
+    QString tip;
+    int tool = -1;
+  };
+
+  // Apply a tool item to a group's main button: swap glyph/tooltip, remember the
+  // selection ("last used"), and -- when activating -- drive the chart tool.
+  void selectGroupTool(QToolButton *button, const ToolItem &item, bool activate) {
+    button->setProperty("iconName", item.icon);
+    button->setProperty("iconPx", 22);
+    button->setProperty("tool", item.tool);
+    button->setIcon(themedIcon(item.icon, 22));
+    button->setToolTip(item.tip + (item.tool < 0 ? "（即将支持）" : ""));
+    button->setEnabled(item.tool >= 0);
+    if (activate && item.tool >= 0) activateDrawingTool(button);
+  }
+
+  void activateDrawingTool(QToolButton *button) {
+    const int tool = button->property("tool").toInt();
+    for (QToolButton *b : drawingButtons_) {
+      QSignalBlocker blocker(b);
+      b->setChecked(b == button);
+    }
+    chart_->setAnnotationTool(static_cast<ChartWidget::AnnotationTool>(tool));
+  }
+
+  // Sync toolbar checked-state when the chart reports a tool change.
+  void syncDrawingTool(ChartWidget::AnnotationTool tool) {
+    for (QToolButton *b : drawingButtons_) {
+      const bool match = b->property("tool").toInt() == static_cast<int>(tool);
+      QSignalBlocker blocker(b);
+      b->setChecked(match);
+    }
+  }
+
+  QToolButton *addToolGroup(QVBoxLayout *layout, const QVector<ToolItem> &items) {
+    auto *button = new QToolButton;
     button->setObjectName("annotationToolButton");
     button->setCheckable(true);
+    button->setAutoRaise(true);
     button->setFixedSize(40, 40);
-    button->setIcon(annotationIcon(tool));
-    button->setIconSize(QSize(24, 24));
-    button->setToolTip(tip);
-    annotationGroup_->addButton(button, static_cast<int>(tool));
-    return button;
-  }
-
-  QIcon glyphIcon(const QString &glyph) const {
-    QPixmap pixmap(28, 28);
-    pixmap.fill(Qt::transparent);
-    QPainter p(&pixmap);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    QFont f = font();
-    f.setPixelSize(16);
-    f.setWeight(QFont::DemiBold);
-    p.setFont(f);
-    p.setPen(Theme::cTextSecondary());
-    p.drawText(pixmap.rect(), Qt::AlignCenter, glyph);
-    return QIcon(pixmap);
-  }
-
-  // Placeholder drawing tools that are reserved in the UI but not yet wired to
-  // chart behaviour. Rendered as disabled icon buttons with a tooltip.
-  QPushButton *placeholderToolButton(const QString &tip, const QString &glyph) {
-    auto *button = new QPushButton;
-    button->setObjectName("annotationToolButton");
-    button->setFixedSize(40, 40);
-    button->setIcon(glyphIcon(glyph));
     button->setIconSize(QSize(22, 22));
-    button->setToolTip(tip + "（即将支持）");
-    button->setEnabled(false);
+    if (items.size() > 1) {
+      auto *menu = new QMenu(button);
+      for (const ToolItem &item : items) {
+        QAction *act = menu->addAction(themedIcon(item.icon, 18), item.tip);
+        act->setEnabled(item.tool >= 0);
+        connect(act, &QAction::triggered, this, [this, button, item] {
+          selectGroupTool(button, item, true);
+        });
+      }
+      button->setMenu(menu);
+      button->setPopupMode(QToolButton::MenuButtonPopup);
+    } else {
+      button->setPopupMode(QToolButton::DelayedPopup);
+    }
+    // Default = first enabled item, otherwise the first (placeholder) item.
+    ToolItem def = items.first();
+    for (const ToolItem &item : items) {
+      if (item.tool >= 0) { def = item; break; }
+    }
+    selectGroupTool(button, def, false);
+    connect(button, &QToolButton::clicked, this, [this, button] {
+      if (button->property("tool").toInt() >= 0) activateDrawingTool(button);
+    });
+    drawingButtons_.append(button);
+    iconButtons_.append(button);
+    layout->addWidget(button, 0, Qt::AlignHCenter);
     return button;
-  }
-
-  QFrame *toolbarGroup(std::initializer_list<QWidget *> widgets) {
-    auto *group = new QFrame;
-    group->setObjectName("toolbarGroup");
-    auto *layout = new QHBoxLayout(group);
-    layout->setContentsMargins(6, 6, 6, 6);
-    layout->setSpacing(8);
-    for (QWidget *widget : widgets) layout->addWidget(widget);
-    return group;
   }
 
   QFrame *toolbarDivider() {
     auto *divider = new QFrame;
     divider->setObjectName("annotationDivider");
-    divider->setFixedSize(22, 1);
+    divider->setFixedSize(24, 1);
     return divider;
   }
 
   QFrame *buildAnnotationToolbar() {
+    using T = ChartWidget::AnnotationTool;
     auto *toolbar = new QFrame;
     toolbar->setObjectName("annotationToolbar");
     toolbar->setFixedWidth(52);
-    auto *outer = new QVBoxLayout(toolbar);
-    outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(0);
-    auto *scroll = new QScrollArea;
-    scroll->setObjectName("annotationScroll");
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    scroll->viewport()->setStyleSheet("background: transparent;");
-    outer->addWidget(scroll);
-    auto *inner = new QWidget;
-    inner->setStyleSheet("background: transparent;");
-    scroll->setWidget(inner);
-    auto *layout = new QVBoxLayout(inner);
+    auto *layout = new QVBoxLayout(toolbar);
     layout->setContentsMargins(6, 8, 6, 8);
     layout->setSpacing(6);
     layout->setAlignment(Qt::AlignHCenter);
-    annotationGroup_ = new QButtonGroup(this);
-    annotationGroup_->setExclusive(true);
-    auto *cursor = annotationButton("选择/拖动图表", ChartWidget::AnnotationTool::None);
-    cursor->setChecked(true);
-    layout->addWidget(cursor);
-    layout->addWidget(placeholderToolButton("十字光标", "+"));
-    layout->addWidget(annotationButton("趋势线 / 单向横线：拖拽确定长度", ChartWidget::AnnotationTool::SegmentLine));
-    layout->addWidget(annotationButton("水平线：全屏", ChartWidget::AnnotationTool::HorizontalLine));
-    layout->addWidget(annotationButton("垂直线：全屏", ChartWidget::AnnotationTool::VerticalLine));
-    layout->addWidget(annotationButton("矩形方框", ChartWidget::AnnotationTool::Rectangle));
-    layout->addWidget(placeholderToolButton("斐波那契回撤", "F"));
-    layout->addWidget(annotationButton("折线 / 画笔：连续点击，右键或双击结束", ChartWidget::AnnotationTool::Polyline));
-    layout->addWidget(annotationButton("开仓区块 Long", ChartWidget::AnnotationTool::LongBlock));
-    layout->addWidget(annotationButton("开仓区块 Short", ChartWidget::AnnotationTool::ShortBlock));
-    layout->addWidget(placeholderToolButton("箭头", "↗"));
-    layout->addWidget(placeholderToolButton("文本标注", "T"));
-    layout->addWidget(placeholderToolButton("测量 / 尺子", "⊿"));
+
+    QToolButton *select = addToolGroup(layout, {
+      {"cursor", "选择 / 拖动图表", static_cast<int>(T::None)},
+      {"crosshair", "十字光标", -1},
+    });
     layout->addWidget(toolbarDivider());
-    magnetButton_ = new QPushButton;
+    addToolGroup(layout, {
+      {"trend-line", "趋势线 / 单向横线：拖拽确定长度", static_cast<int>(T::SegmentLine)},
+      {"h-line", "水平线：全屏", static_cast<int>(T::HorizontalLine)},
+      {"v-line", "垂直线：全屏", static_cast<int>(T::VerticalLine)},
+      {"brush", "折线 / 画笔：连续点击，右键或双击结束", static_cast<int>(T::Polyline)},
+    });
+    addToolGroup(layout, {
+      {"rectangle", "矩形方框", static_cast<int>(T::Rectangle)},
+      {"fibonacci", "斐波那契回撤", -1},
+    });
+    addToolGroup(layout, {
+      {"long", "开仓区块 Long", static_cast<int>(T::LongBlock)},
+      {"short", "开仓区块 Short", static_cast<int>(T::ShortBlock)},
+    });
+    addToolGroup(layout, {
+      {"arrow", "箭头标注", -1},
+      {"text", "文本标注", -1},
+      {"ruler", "测量 / 尺子", -1},
+    });
+    layout->addWidget(toolbarDivider());
+    magnetButton_ = new QToolButton;
     magnetButton_->setObjectName("annotationToolButton");
     magnetButton_->setCheckable(true);
     magnetButton_->setChecked(true);
+    magnetButton_->setAutoRaise(true);
     magnetButton_->setFixedSize(40, 40);
-    magnetButton_->setIcon(magnetIcon());
-    magnetButton_->setIconSize(QSize(24, 24));
+    magnetButton_->setIconSize(QSize(22, 22));
     magnetButton_->setToolTip("磁铁吸附：吸附到最近 K 线 OHLC");
-    layout->addWidget(magnetButton_);
-    layout->addWidget(placeholderToolButton("锁定绘图", "🔒"));
-    layout->addWidget(placeholderToolButton("显示 / 隐藏绘图", "👁"));
-    layout->addWidget(placeholderToolButton("删除绘图", "🗑"));
+    registerIcon(magnetButton_, "magnet", 22);
+    layout->addWidget(magnetButton_, 0, Qt::AlignHCenter);
+    addToolGroup(layout, {
+      {"lock", "锁定绘图", -1},
+      {"eye", "显示 / 隐藏绘图", -1},
+      {"trash", "删除绘图", -1},
+    });
     layout->addStretch(1);
+
+    // Cursor tool is the initial selection.
+    QSignalBlocker blocker(select);
+    select->setChecked(true);
     return toolbar;
   }
 
@@ -425,8 +506,8 @@ private:
     layout->addWidget(mainSplitter_, 1);
 
     buildIndicatorDialog();
-    buildBackendDialog();
     buildSettingsPopover();
+    buildStatusBar();
 
     QTimer::singleShot(0, this, [this] {
       bodySplitter_->setSizes({1000, 300});
@@ -467,12 +548,6 @@ private:
     symbol_->setFixedWidth(232);
     symbol_->setClearButtonEnabled(true);
 
-    exchange_ = new QComboBox;
-    exchange_->setObjectName("exchangeSelect");
-    exchange_->addItems({"Binance 币安", "OKX 欧易", "Bybit", "Coinbase", "Bitget"});
-    exchange_->setFixedWidth(132);
-    exchange_->setToolTip("交易所 / 市场（占位，待接入后端）");
-
     summarySymbol_ = new QLabel("XAUUSD");
     summarySymbol_->setObjectName("summarySymbol");
     priceLabel_ = new QLabel("--");
@@ -507,21 +582,24 @@ private:
     statsLayout->addLayout(statsTop);
     statsLayout->addWidget(vol24_);
 
-    refresh_ = new QPushButton("⟳");
+    refresh_ = new QPushButton;
     refresh_->setObjectName("topIconButton");
     refresh_->setFixedSize(34, 34);
+    refresh_->setIconSize(QSize(18, 18));
     refresh_->setToolTip("刷新行情");
-    notifyButton_ = new QPushButton("🔔");
+    registerIcon(refresh_, "refresh", 18);
+    notifyButton_ = new QPushButton;
     notifyButton_->setObjectName("topIconButton");
     notifyButton_->setFixedSize(34, 34);
+    notifyButton_->setIconSize(QSize(18, 18));
     notifyButton_->setToolTip("通知（占位）");
-    settingsGear_ = new QPushButton("⚙");
+    registerIcon(notifyButton_, "bell", 18);
+    settingsGear_ = new QPushButton;
     settingsGear_->setObjectName("topIconButton");
     settingsGear_->setFixedSize(34, 34);
+    settingsGear_->setIconSize(QSize(18, 18));
     settingsGear_->setToolTip("设置");
-    status_ = new QLabel("连接中");
-    status_->setObjectName("status");
-    status_->setFixedWidth(108);
+    registerIcon(settingsGear_, "settings", 18);
 
 #ifdef Q_OS_MACOS
     minimize_ = new QPushButton;
@@ -541,35 +619,36 @@ private:
     bar->addWidget(titleCopy);
     bar->addSpacing(6);
     bar->addWidget(symbol_);
-    bar->addWidget(exchange_);
     bar->addSpacing(6);
     bar->addWidget(summaryBlock);
     bar->addWidget(statsBlock);
     bar->addStretch(1);
-    bar->addWidget(status_);
     bar->addWidget(refresh_);
     bar->addWidget(notifyButton_);
     bar->addWidget(settingsGear_);
 #else
-    minimize_ = new QPushButton("−");
-    maximize_ = new QPushButton("▢");
-    close_ = new QPushButton("×");
+    minimize_ = new QPushButton;
+    maximize_ = new QPushButton;
+    close_ = new QPushButton;
     minimize_->setObjectName("windowButton");
     maximize_->setObjectName("windowButton");
     close_->setObjectName("closeButton");
     minimize_->setFixedSize(30, 24);
     maximize_->setFixedSize(30, 24);
     close_->setFixedSize(34, 24);
+    minimize_->setIconSize(QSize(15, 15));
+    maximize_->setIconSize(QSize(15, 15));
+    close_->setIconSize(QSize(15, 15));
+    registerIcon(minimize_, "minus", 15);
+    registerIcon(close_, "close", 15);
     bar->addWidget(titleIcon);
     bar->addWidget(titleCopy);
     bar->addSpacing(6);
     bar->addWidget(symbol_);
-    bar->addWidget(exchange_);
     bar->addSpacing(6);
     bar->addWidget(summaryBlock);
     bar->addWidget(statsBlock);
     bar->addStretch(1);
-    bar->addWidget(status_);
     bar->addWidget(refresh_);
     bar->addWidget(notifyButton_);
     bar->addWidget(settingsGear_);
@@ -578,6 +657,44 @@ private:
     bar->addWidget(maximize_);
     bar->addWidget(close_);
 #endif
+  }
+
+  // ---- Bottom status bar ------------------------------------------------------
+  void buildStatusBar() {
+    statusBar_ = statusBar();
+    statusBar_->setSizeGripEnabled(false);
+    sbConnection_ = new QLabel("○ 连接中");
+    sbConnection_->setObjectName("sbDisconnected");
+    sbBackend_ = new QLabel("后端 --");
+    sbBackend_->setObjectName("sbItem");
+    sbRealtime_ = new QLabel("实时 --");
+    sbRealtime_->setObjectName("sbItem");
+    sbLatency_ = new QLabel("延迟 --");
+    sbLatency_->setObjectName("sbItem");
+    statusBar_->addWidget(sbConnection_);
+    statusBar_->addPermanentWidget(sbBackend_);
+    statusBar_->addPermanentWidget(sbRealtime_);
+    statusBar_->addPermanentWidget(sbLatency_);
+  }
+
+  void setConnectionStatus(const QString &text, bool live) {
+    if (sbConnection_) {
+      sbConnection_->setText((live ? "● " : "○ ") + text);
+      const QString col = live ? Theme::green() : (dark_ ? Theme::textMuted() : Theme::lTextMuted());
+      sbConnection_->setStyleSheet(QString("color:%1; padding:0 8px; font-weight:%2;").arg(col, live ? "600" : "400"));
+    }
+    if (infoSource_) infoSource_->setText(QString("数据源：%1 %2").arg(live ? "●" : "○", text));
+  }
+
+  void updateStatusBar() {
+    if (!sbBackend_) return;
+    if (client_.hasConfiguredBackend()) {
+      sbBackend_->setText(QString("后端 %1").arg(client_.backendBase()));
+      sbRealtime_->setText(client_.realtimeEnabled() ? "实时 开启" : "实时 关闭");
+    } else {
+      sbBackend_->setText("后端 未配置");
+      sbRealtime_->setText("实时 --");
+    }
   }
 
   // ---- Chart workspace: toolbar + legend + chart + subcharts + replay bar ----
@@ -677,11 +794,15 @@ private:
 
     indicators_ = new QPushButton("指标 ▾");
     indicators_->setObjectName("toolButton");
+    indicators_->setIconSize(QSize(16, 16));
+    registerIcon(indicators_, "indicator", 16);
     buildIndicatorsMenu();
     layout->addWidget(indicators_);
 
     customIndicators_ = new QPushButton("自定义指标 ▾");
     customIndicators_->setObjectName("toolButton");
+    customIndicators_->setIconSize(QSize(16, 16));
+    registerIcon(customIndicators_, "function", 16);
     layout->addWidget(customIndicators_);
     connect(customIndicators_, &QPushButton::clicked, this, [this] {
       rebuildCustomIndicatorList();
@@ -695,24 +816,16 @@ private:
     replayToggle_ = new QPushButton("K线回放");
     replayToggle_->setObjectName("toolButton");
     replayToggle_->setCheckable(true);
+    replayToggle_->setIconSize(QSize(16, 16));
+    registerIcon(replayToggle_, "history", 16);
     layout->addWidget(replayToggle_);
 
-    replayTime_ = new QDateTimeEdit;
-    replayTime_->setObjectName("replayTime");
-    replayTime_->setDisplayFormat("yyyy-MM-dd HH:mm");
-    replayTime_->setCalendarPopup(true);
-    replayTime_->setTimeSpec(Qt::LocalTime);
-    replayTime_->setMinimumDateTime(QDateTime(QDate(2000, 1, 1), QTime(0, 0)));
-    replayTime_->setMaximumDateTime(QDateTime(QDate(2099, 12, 31), QTime(23, 59)));
-    replayTime_->setDateTime(normalizeReplayMinute(QDateTime::currentDateTime()));
-    replayTime_->setToolTip("回放时间，精度到分钟");
-    replayTime_->setFixedWidth(168);
-    layout->addWidget(replayTime_);
-
-    rightToggleBtn_ = new QPushButton("›");
+    rightToggleBtn_ = new QPushButton;
     rightToggleBtn_->setObjectName("collapseButton");
-    rightToggleBtn_->setFixedSize(26, 30);
+    rightToggleBtn_->setFixedSize(28, 30);
+    rightToggleBtn_->setIconSize(QSize(16, 16));
     rightToggleBtn_->setToolTip("显示 / 隐藏策略侧边栏");
+    registerIcon(rightToggleBtn_, "chevron-right", 16);
     layout->addWidget(rightToggleBtn_);
     connect(rightToggleBtn_, &QPushButton::clicked, this, [this] {
       setRightSidebarCollapsed(rightSidebar_->isVisible());
@@ -832,26 +945,48 @@ private:
     if (subcharts_.isEmpty()) subchartContainer_->setVisible(false);
   }
 
-  // ---- Replay control bar -----------------------------------------------------
+  // ---- Replay control bar (shown only while replay is active) ----------------
   QFrame *buildReplayBar() {
     auto *bar = new QFrame;
     bar->setObjectName("replayBar");
     auto *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(12, 6, 12, 6);
+    layout->setContentsMargins(12, 7, 12, 7);
     layout->setSpacing(8);
 
     auto *title = new QLabel("K线回放");
     title->setObjectName("replayTitle");
     layout->addWidget(title);
 
-    replayHome_ = new QPushButton("⏮");
-    replayPrev_ = new QPushButton("‹");
-    replayPlay_ = new QPushButton("▶");
-    replayStep_ = new QPushButton("›");
-    replayEnd_ = new QPushButton("⏭");
+    auto *calIcon = new QLabel;
+    calIcon->setPixmap(tintedPixmap("calendar", dark_ ? Theme::cTextSecondary() : QColor(Theme::lTextSecondary()), 16));
+    layout->addWidget(calIcon);
+    replayTime_ = new QDateTimeEdit;
+    replayTime_->setObjectName("replayTime");
+    replayTime_->setDisplayFormat("yyyy-MM-dd HH:mm");
+    replayTime_->setCalendarPopup(true);
+    replayTime_->setTimeSpec(Qt::LocalTime);
+    replayTime_->setMinimumDateTime(QDateTime(QDate(2000, 1, 1), QTime(0, 0)));
+    replayTime_->setMaximumDateTime(QDateTime(QDate(2099, 12, 31), QTime(23, 59)));
+    replayTime_->setDateTime(normalizeReplayMinute(QDateTime::currentDateTime()));
+    replayTime_->setToolTip("回放起始时间，精度到分钟");
+    replayTime_->setFixedWidth(168);
+    replayTime_->setFixedHeight(30);
+    layout->addWidget(replayTime_);
+
+    auto *sep = new QFrame;
+    sep->setObjectName("toolbarVSep");
+    sep->setFixedSize(1, 20);
+    layout->addWidget(sep);
+
+    replayHome_ = new QPushButton;
+    replayPrev_ = new QPushButton;
+    replayPlay_ = new QPushButton;
+    replayStep_ = new QPushButton;
+    replayEnd_ = new QPushButton;
     for (QPushButton *b : {replayHome_, replayPrev_, replayPlay_, replayStep_, replayEnd_}) {
       b->setObjectName("replayButton");
       b->setFixedSize(34, 30);
+      b->setIconSize(QSize(16, 16));
     }
     replayPlay_->setCheckable(true);
     replayHome_->setToolTip("回到起点");
@@ -859,6 +994,11 @@ private:
     replayPlay_->setToolTip("播放 / 暂停");
     replayStep_->setToolTip("下一根");
     replayEnd_->setToolTip("到当前");
+    registerIcon(replayHome_, "skip-back", 16);
+    registerIcon(replayPrev_, "chevron-left", 16);
+    registerIcon(replayPlay_, "play", 16);
+    registerIcon(replayStep_, "chevron-right", 16);
+    registerIcon(replayEnd_, "skip-forward", 16);
     layout->addWidget(replayHome_);
     layout->addWidget(replayPrev_);
     layout->addWidget(replayPlay_);
@@ -888,6 +1028,9 @@ private:
     replayCurrentLabel_ = new QLabel("当前 --");
     replayCurrentLabel_->setObjectName("replayInfo");
     layout->addWidget(replayCurrentLabel_);
+
+    replayBar_ = bar;
+    replayBar_->setVisible(false);
     return bar;
   }
 
@@ -903,8 +1046,7 @@ private:
 
     rightTabs_ = new QTabWidget;
     rightTabs_->setObjectName("rightTabs");
-    rightTabs_->addTab(buildStrategyReplayTab(), "策略回放");
-    rightTabs_->addTab(buildPlaceholderTab("回放评估功能即将上线。"), "回放评估");
+    rightTabs_->addTab(buildStrategyTab(), "策略");
     rightTabs_->addTab(buildCustomServerTab(), "自定义服务端");
     layout->addWidget(rightTabs_, 1);
     return sidebar;
@@ -925,7 +1067,7 @@ private:
     return page;
   }
 
-  QWidget *buildStrategyReplayTab() {
+  QWidget *buildStrategyTab() {
     auto *page = new QWidget;
     page->setObjectName("tabPage");
     auto *layout = new QVBoxLayout(page);
@@ -968,26 +1110,26 @@ private:
       }
     });
     connect(strategyTable_, &QTableWidget::cellDoubleClicked, this, [this](int, int) {
-      loadStrategyAndReplay();
+      loadStrategy();
     });
 
     loadStrategyBtn_ = new QPushButton("请选择策略");
     loadStrategyBtn_->setObjectName("strategyLoadButton");
     loadStrategyBtn_->setFixedHeight(36);
     layout->addWidget(loadStrategyBtn_);
-    connect(loadStrategyBtn_, &QPushButton::clicked, this, [this] { loadStrategyAndReplay(); });
+    connect(loadStrategyBtn_, &QPushButton::clicked, this, [this] { loadStrategy(); });
 
     auto *infoBox = new QFrame;
     infoBox->setObjectName("infoCard");
     auto *infoLayout = new QVBoxLayout(infoBox);
     infoLayout->setContentsMargins(12, 10, 12, 10);
     infoLayout->setSpacing(6);
-    auto *infoTitle = new QLabel("当前回放信息");
+    auto *infoTitle = new QLabel("当前策略信息");
     infoTitle->setObjectName("sectionLabel");
-    infoStart_ = new QLabel("起点：--");
-    infoCurrent_ = new QLabel("当前：--");
+    infoStart_ = new QLabel("数据起点：--");
+    infoCurrent_ = new QLabel("事件数量：--");
     infoSpeed_ = new QLabel("回放速度：10x");
-    infoSource_ = new QLabel("数据源：● 未连接");
+    infoSource_ = new QLabel("数据源：○ 未连接");
     infoLatency_ = new QLabel("延迟：--");
     for (QLabel *l : {infoStart_, infoCurrent_, infoSpeed_, infoSource_, infoLatency_}) l->setObjectName("infoLine");
     infoLayout->addWidget(infoTitle);
@@ -1009,28 +1151,83 @@ private:
     auto *title = new QLabel("自定义服务端");
     title->setObjectName("sectionLabel");
     layout->addWidget(title);
+
     serverInfoLabel_ = new QLabel;
     serverInfoLabel_->setObjectName("mutedLabel");
     serverInfoLabel_->setWordWrap(true);
     layout->addWidget(serverInfoLabel_);
-    auto *configBtn = new QPushButton("配置服务端…");
-    configBtn->setObjectName("toolButton");
-    configBtn->setFixedHeight(32);
-    layout->addWidget(configBtn);
-    connect(configBtn, &QPushButton::clicked, this, [this] { showBackendDialog(false); });
+
+    auto *form = new QFrame;
+    form->setObjectName("formCard");
+    auto *formLayout = new QVBoxLayout(form);
+    formLayout->setContentsMargins(12, 12, 12, 12);
+    formLayout->setSpacing(8);
+
+    auto addField = [&](const QString &label, QWidget *field) {
+      auto *l = new QLabel(label);
+      l->setObjectName("fieldLabel");
+      formLayout->addWidget(l);
+      formLayout->addWidget(field);
+    };
+
+    backendUrl_ = new QLineEdit;
+    backendUrl_->setPlaceholderText("http://127.0.0.1:8080");
+    addField("HTTP 接口地址", backendUrl_);
+    wsUrl_ = new QLineEdit;
+    wsUrl_->setPlaceholderText("ws://127.0.0.1:8080/ws");
+    addField("WebSocket 地址", wsUrl_);
+    realtime_ = new QCheckBox("启用实时推送");
+    formLayout->addWidget(realtime_);
+
+    auto *saveBtn = new QPushButton("保存并连接");
+    saveBtn->setObjectName("strategyLoadButton");
+    saveBtn->setFixedHeight(34);
+    formLayout->addWidget(saveBtn);
+    connect(saveBtn, &QPushButton::clicked, this, [this] { saveBackendFromForm(); });
+    layout->addWidget(form);
     layout->addStretch(1);
+
+    syncServerForm();
     updateServerInfoLabel();
     return page;
+  }
+
+  void syncServerForm() {
+    if (backendUrl_) backendUrl_->setText(client_.backendBase());
+    if (wsUrl_) wsUrl_->setText(client_.wsBase());
+    if (realtime_) realtime_->setChecked(client_.realtimeEnabled());
+  }
+
+  void saveBackendFromForm() {
+    const QString backend = backendUrl_ ? backendUrl_->text().trimmed() : QString();
+    if (backend.isEmpty()) {
+      QMessageBox::warning(this, "服务端配置", "HTTP 后端地址不能为空。");
+      return;
+    }
+    client_.configureBackend(backend, wsUrl_ ? wsUrl_->text() : QString(), realtime_ && realtime_->isChecked());
+    saveBackendSettings();
+    updateServerInfoLabel();
+    updateStatusBar();
+    client_.loadOverlayStrategies();
+    refresh();
+  }
+
+  // First launch / disconnected: switch to the config tab instead of a modal.
+  void promptConfigureBackend() {
+    if (rightTabs_) {
+      if (rightSidebar_ && !rightSidebar_->isVisible()) setRightSidebarCollapsed(false);
+      rightTabs_->setCurrentIndex(rightTabs_->count() - 1);
+    }
+    if (serverInfoLabel_) serverInfoLabel_->setText("请在下方填写服务端地址并保存以开始使用。");
   }
 
   void updateServerInfoLabel() {
     if (!serverInfoLabel_) return;
     if (!client_.hasConfiguredBackend()) {
-      serverInfoLabel_->setText("服务端未连接\n请点击下方按钮配置服务端地址。");
+      serverInfoLabel_->setText("服务端未连接，请在下方填写地址并保存。");
       return;
     }
-    serverInfoLabel_->setText(QString("HTTP：%1\nWebSocket：%2\n实时：%3")
-      .arg(client_.backendBase(), client_.wsBase(), client_.realtimeEnabled() ? "开启" : "关闭"));
+    serverInfoLabel_->setText(QString("当前已连接：%1").arg(client_.backendBase()));
   }
 
   // ---- Bottom server log panel ------------------------------------------------
@@ -1047,10 +1244,12 @@ private:
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(12, 0, 10, 0);
     headerLayout->setSpacing(8);
-    logCollapseBtn_ = new QPushButton("⌄");
+    logCollapseBtn_ = new QPushButton;
     logCollapseBtn_->setObjectName("collapseButton");
     logCollapseBtn_->setFixedSize(24, 22);
+    logCollapseBtn_->setIconSize(QSize(14, 14));
     logCollapseBtn_->setToolTip("展开 / 折叠服务日志");
+    registerIcon(logCollapseBtn_, "chevron-down", 14);
     auto *title = new QLabel("服务日志");
     title->setObjectName("sectionLabel");
     logLevel_ = new QComboBox;
@@ -1063,6 +1262,10 @@ private:
     logExport_->setObjectName("toolButton");
     logClear_->setFixedHeight(26);
     logExport_->setFixedHeight(26);
+    logClear_->setIconSize(QSize(14, 14));
+    logExport_->setIconSize(QSize(14, 14));
+    registerIcon(logClear_, "trash", 14);
+    registerIcon(logExport_, "download", 14);
     statInfo_ = new QLabel("INFO 0");
     statWarn_ = new QLabel("WARN 0");
     statError_ = new QLabel("ERROR 0");
@@ -1087,14 +1290,23 @@ private:
 
     logBody_ = new QWidget;
     auto *bodyLayout = new QVBoxLayout(logBody_);
-    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setContentsMargins(8, 6, 8, 8);
     bodyLayout->setSpacing(0);
-    debugLog_ = new QPlainTextEdit;
-    debugLog_->setObjectName("debugLog");
-    debugLog_->setReadOnly(true);
-    debugLog_->setMaximumBlockCount(5000);
-    debugLog_->setFrameShape(QFrame::NoFrame);
-    bodyLayout->addWidget(debugLog_, 1);
+    logTable_ = new QTableWidget(0, 4);
+    logTable_->setObjectName("logTable");
+    logTable_->setHorizontalHeaderLabels({"时间", "级别", "模块", "信息"});
+    logTable_->verticalHeader()->setVisible(false);
+    logTable_->setShowGrid(false);
+    logTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    logTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    logTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    logTable_->setWordWrap(false);
+    logTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    logTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    logTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    logTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    logTable_->verticalHeader()->setDefaultSectionSize(22);
+    bodyLayout->addWidget(logTable_, 1);
     layout->addWidget(logBody_, 1);
 
     connect(logCollapseBtn_, &QPushButton::clicked, this, [this] {
@@ -1228,7 +1440,7 @@ private:
     builtinLayout->addRow("Left / Right N", fvgCircleN_);
     builtinLayout->addRow("Min gap ticks", fvgCircleMinGapTicks_);
     indicatorErrorText_ = new QPlainTextEdit;
-    indicatorErrorText_->setObjectName("debugLog");
+    indicatorErrorText_->setObjectName("errorBox");
     indicatorErrorText_->setReadOnly(true);
     indicatorErrorText_->setMinimumHeight(160);
     auto *errorLabel = new QLabel("脚本错误");
@@ -1638,61 +1850,6 @@ plotshape(marks, {
     reloadIndicatorsFromDisk();
   }
 
-  void buildBackendDialog() {
-    backendDialog_ = new QDialog(this);
-    backendDialog_->setWindowTitle("后端接口");
-    backendDialog_->setMinimumSize(520, 260);
-    auto *layout = new QVBoxLayout(backendDialog_);
-    layout->setContentsMargins(22, 20, 22, 18);
-    layout->setSpacing(14);
-    auto *form = new QFormLayout;
-    form->setSpacing(14);
-    backendUrl_ = new QLineEdit(client_.backendBase());
-    wsUrl_ = new QLineEdit(client_.wsBase());
-    realtime_ = new QCheckBox("启用实时 K 线");
-    realtime_->setChecked(client_.realtimeEnabled());
-    backendUrl_->setMinimumHeight(34);
-    wsUrl_->setMinimumHeight(34);
-    backendUrl_->setPlaceholderText("http://127.0.0.1:8080");
-    wsUrl_->setPlaceholderText("留空则从 HTTP 地址自动推导");
-    form->addRow("HTTP 后端", backendUrl_);
-    form->addRow("WebSocket", wsUrl_);
-    form->addRow("实时", realtime_);
-    layout->addLayout(form);
-
-    auto *hint = new QLabel("HTTP 地址用于 /api/candles；关闭实时 K 线后不会连接 /ws/candles。");
-    hint->setWordWrap(true);
-    layout->addWidget(hint);
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Ok);
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, backendDialog_, &QDialog::reject);
-    connect(buttons, &QDialogButtonBox::accepted, backendDialog_, &QDialog::accept);
-  }
-
-  bool showBackendDialog(bool startup = false) {
-    if (!backendDialog_) return false;
-    backendUrl_->setText(client_.backendBase());
-    wsUrl_->setText(client_.wsBase());
-    realtime_->setChecked(client_.realtimeEnabled());
-    while (true) {
-      if (backendDialog_->exec() != QDialog::Accepted) {
-        return false;
-      }
-      const QString backend = backendUrl_->text().trimmed();
-      if (backend.isEmpty()) {
-        QMessageBox::warning(this, "后端接口", "HTTP 后端地址不能为空。");
-        continue;
-      }
-      client_.configureBackend(backend, wsUrl_->text(), realtime_->isChecked());
-      saveBackendSettings();
-      updateServerInfoLabel();
-      client_.loadOverlayStrategies();
-      if (!startup) refresh();
-      return true;
-    }
-  }
-
   void loadBackendSettings() {
     QSettings settings("Q4J", "KLineViewer");
     const QString backend = settings.value("backend/http").toString().trimmed();
@@ -1761,15 +1918,13 @@ plotshape(marks, {
   void updateLoadStrategyButton() {
     if (!loadStrategyBtn_) return;
     const bool hasSelection = strategyTable_ && strategyTable_->currentRow() >= 0;
-    if (!hasSelection) {
-      loadStrategyBtn_->setText("请选择策略");
-      return;
-    }
-    if (loadedEventCount_ > 0) loadStrategyBtn_->setText(QString("加载策略并回放（%1条）").arg(loadedEventCount_));
-    else loadStrategyBtn_->setText("加载策略并回放");
+    loadStrategyBtn_->setEnabled(hasSelection);
+    loadStrategyBtn_->setText(hasSelection ? "加载策略" : "请选择策略");
   }
 
-  void loadStrategyAndReplay() {
+  // Load the selected strategy's overlay events. The chart renders them
+  // naturally via overlayEventsLoaded; replay remains an independent feature.
+  void loadStrategy() {
     if (strategyTable_) {
       const int row = strategyTable_->currentRow();
       if (row >= 0) {
@@ -1777,7 +1932,7 @@ plotshape(marks, {
       }
     }
     saveStrategySettings();
-    loadStrategyBtn_->setText("正在加载策略事件...");
+    loadStrategyBtn_->setText("正在加载策略事件…");
     refresh();
   }
 
@@ -1900,11 +2055,8 @@ plotshape(marks, {
     connect(maximize_, &QPushButton::clicked, this, &MainWindow::toggleMaximized);
     connect(close_, &QPushButton::clicked, this, &QWidget::close);
     connect(settingsGear_, &QPushButton::clicked, this, &MainWindow::openSettingsPopover);
-    connect(annotationGroup_, &QButtonGroup::idClicked, this, [this](int id) {
-      chart_->setAnnotationTool(static_cast<ChartWidget::AnnotationTool>(id));
-    });
     connect(chart_, &ChartWidget::annotationToolChanged, this, [this](ChartWidget::AnnotationTool tool) {
-      if (QAbstractButton *button = annotationGroup_->button(static_cast<int>(tool))) button->setChecked(true);
+      syncDrawingTool(tool);
     });
     connect(chart_, &ChartWidget::fvgCircleVisibilityChanged, this, [this](bool enabled) {
       if (fvgCircleEnabled_ && fvgCircleEnabled_->isChecked() != enabled) fvgCircleEnabled_->setChecked(enabled);
@@ -1919,12 +2071,13 @@ plotshape(marks, {
       rebuildCustomIndicatorList();
       updateIndicatorErrorText();
     });
-    connect(magnetButton_, &QPushButton::toggled, chart_, &ChartWidget::setMagnetEnabled);
+    connect(magnetButton_, &QToolButton::toggled, chart_, &ChartWidget::setMagnetEnabled);
     connect(updateButton_, &QPushButton::clicked, this, &MainWindow::checkForUpdates);
     replayTimer_.setInterval(replayIntervalForSpeed(replaySpeedValue_));
     connect(&replayTimer_, &QTimer::timeout, this, &MainWindow::stepReplay);
     connect(replayToggle_, &QPushButton::toggled, this, [this](bool enabled) {
       replayActive_ = enabled;
+      if (replayBar_) replayBar_->setVisible(enabled);
       if (!enabled) {
         replayTimer_.stop();
         if (replayPlay_) replayPlay_->setChecked(false);
@@ -1997,6 +2150,7 @@ plotshape(marks, {
       else if (events.isObject()) count = events.toObject().value("layers").toArray().size();
       events_->setText(QString("事件 %1").arg(count));
       loadedEventCount_ = count;
+      if (infoCurrent_) infoCurrent_->setText(QString("事件数量：%1").arg(count));
       updateLoadStrategyButton();
     });
     connect(&client_, &CandleClient::overlayStrategiesLoaded, this, &MainWindow::populateStrategies);
@@ -2039,9 +2193,9 @@ plotshape(marks, {
       updateVisibleRangeLabel();
     });
     connect(&client_, &CandleClient::statusChanged, this, [this](const QString &status, bool live) {
-      status_->setText((live ? "● " : "○ ") + status);
-      if (infoSource_) infoSource_->setText(QString("数据源：%1 %2").arg(live ? "●" : "○", status));
+      setConnectionStatus(status, live);
       updateServerInfoLabel();
+      updateStatusBar();
     });
     connect(chart_, &ChartWidget::hoveredCandleChanged, this, [this](const Candle *c) {
       if (!c) {
@@ -2082,10 +2236,275 @@ plotshape(marks, {
       QSignalBlocker blocker(themeToggle_);
       themeToggle_->setChecked(dark_);
     }
-    if (maximize_) maximize_->setText((maximizedAnimated_ || isMaximized()) ? "❐" : "□");
-    QString css = (dark_ ? darkCss() : lightCss()) + modernControlsCss(dark_);
-    if (dark_) css += newDarkThemeCss();
-    qApp->setStyleSheet(css);
+    qApp->setStyleSheet(appStyleSheet(dark_));
+    refreshIcons();
+#ifndef Q_OS_MACOS
+    if (maximize_) {
+      maximize_->setIconSize(QSize(15, 15));
+      maximize_->setIcon(themedIcon((maximizedAnimated_ || isMaximized()) ? "restore" : "square", 15));
+    }
+#endif
+    updateStatusBar();
+  }
+
+  // Single source of truth for the application stylesheet. Palette tokens are
+  // OKLCH-derived (see theme.hpp) and substituted into one template so dark and
+  // light modes stay structurally identical.
+  QString appStyleSheet(bool dark) const {
+    QHash<QString, QString> t;
+    if (dark) {
+      t = {
+        {"BG_APP", Theme::bgApp()}, {"BG_PANEL", Theme::bgPanel()}, {"BG_PANEL2", Theme::bgPanel2()},
+        {"BG_TOOLBAR", Theme::bgToolbar()}, {"BG_ELEV", Theme::bgElevated()}, {"BG_HOVER", Theme::bgHover()},
+        {"BORDER", Theme::borderSubtle()}, {"BORDER_STRONG", Theme::borderStrong()},
+        {"TXT", Theme::textPrimary()}, {"TXT2", Theme::textSecondary()}, {"TXT3", Theme::textMuted()},
+        {"BRAND", Theme::brandBlue()}, {"BRAND_HOVER", Theme::brandBlueHover()}, {"BRAND_SOFT", Theme::brandBlueSoft()},
+        {"GREEN", Theme::green()}, {"RED", Theme::red()},
+        {"HEADER_BG", Theme::bgElevated()}, {"SHELL_BORDER", "rgba(120, 170, 255, 0.22)"},
+      };
+    } else {
+      t = {
+        {"BG_APP", Theme::lBgApp()}, {"BG_PANEL", Theme::lBgPanel()}, {"BG_PANEL2", Theme::lBgPanel()},
+        {"BG_TOOLBAR", Theme::lBgElevated()}, {"BG_ELEV", Theme::lBgElevated()}, {"BG_HOVER", Theme::lBgHover()},
+        {"BORDER", Theme::lBorderSubtle()}, {"BORDER_STRONG", Theme::lBorderStrong()},
+        {"TXT", Theme::lTextPrimary()}, {"TXT2", Theme::lTextSecondary()}, {"TXT3", Theme::lTextMuted()},
+        {"BRAND", Theme::lBrandBlue()}, {"BRAND_HOVER", "#1D4ED8"}, {"BRAND_SOFT", "rgba(37, 99, 235, 0.12)"},
+        {"GREEN", "#0E9F6E"}, {"RED", "#E02D3C"},
+        {"HEADER_BG", "#FFFFFF"}, {"SHELL_BORDER", "rgba(30, 50, 80, 0.22)"},
+      };
+    }
+    QString css = QStringLiteral(R"CSS(
+      * { font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
+      QWidget { background: @BG_APP@; color: @TXT@; font-size: 13px; }
+      QMainWindow { background: @BG_APP@; }
+      QWidget#appShell { background: @BG_APP@; border: 1px solid @SHELL_BORDER@; }
+      QToolTip { background: @BG_ELEV@; color: @TXT@; border: 1px solid @BORDER@; padding: 4px 8px; border-radius: 5px; }
+
+      /* ---- Top navigation bar ---- */
+      QFrame#topBar {
+        min-height: 60px; max-height: 60px;
+        background: @HEADER_BG@;
+        border: 0; border-bottom: 1px solid @BORDER_STRONG@;
+      }
+      QWidget#barBlock { background: transparent; }
+      QLabel#titleIcon { background: transparent; }
+      QLabel#titleText { background: transparent; color: @TXT@; font-size: 17px; font-weight: 700; }
+      QLabel#titleSubText { background: transparent; color: @TXT2@; font-size: 12px; }
+      QLabel#titleVersion { background: transparent; color: @TXT3@; font-size: 11px; }
+      QLabel#summarySymbol { background: transparent; color: @TXT@; font-size: 15px; font-weight: 600; }
+      QLabel#summaryPrice { background: transparent; color: @TXT@; font-size: 17px; font-weight: 700; }
+      QLabel#summaryChange { background: transparent; color: @TXT2@; font-size: 13px; font-weight: 600; }
+      QLabel#summaryStat { background: transparent; color: @TXT2@; font-size: 11px; }
+
+      QLineEdit#symbolInput {
+        min-height: 36px; max-height: 36px;
+        background: @BG_APP@; border: 1px solid @BORDER@; border-radius: 8px;
+        padding: 0 12px; color: @TXT@;
+        selection-background-color: @BRAND@; selection-color: #ffffff;
+      }
+      QLineEdit#symbolInput:focus { border-color: @BRAND@; }
+
+      QPushButton#topIconButton {
+        background: transparent; border: 1px solid @BORDER@; border-radius: 8px; color: @TXT2@;
+      }
+      QPushButton#topIconButton:hover { background: @BG_HOVER@; border-color: @BORDER_STRONG@; }
+      QPushButton#windowButton, QPushButton#closeButton {
+        min-height: 24px; max-height: 24px; background: transparent;
+        border: 1px solid transparent; border-radius: 6px; color: @TXT2@;
+      }
+      QPushButton#windowButton:hover { background: @BG_HOVER@; }
+      QPushButton#closeButton:hover { background: @RED@; }
+
+      /* ---- Splitters / body ---- */
+      QSplitter::handle { background: transparent; }
+      QSplitter::handle:hover { background: @BORDER_STRONG@; }
+      QWidget#bodyArea, QWidget#chartWorkspace { background: @BG_APP@; }
+
+      /* ---- Annotation toolbar ---- */
+      QFrame#annotationToolbar { background: @BG_TOOLBAR@; border: 1px solid @BORDER@; border-radius: 10px; }
+      QFrame#toolGroup { background: transparent; }
+      QToolButton#annotationToolButton, QPushButton#annotationToolButton {
+        background: transparent; border: 1px solid transparent; border-radius: 8px; color: @TXT2@;
+      }
+      QToolButton#annotationToolButton:hover, QPushButton#annotationToolButton:hover { background: @BG_HOVER@; }
+      QToolButton#annotationToolButton:checked, QPushButton#annotationToolButton:checked {
+        background: @BRAND_SOFT@; border-color: @BRAND@;
+      }
+      QToolButton#annotationToolButton:disabled, QPushButton#annotationToolButton:disabled { color: @TXT3@; }
+      QToolButton#annotationToolButton::menu-indicator { image: none; width: 0; }
+      QPushButton#groupChevron {
+        background: transparent; border: none; color: @TXT3@;
+      }
+      QPushButton#groupChevron:hover { color: @TXT@; }
+      QFrame#annotationDivider, QFrame#toolbarVSep { background: @BORDER@; border: 0; }
+      QFrame#toolPopover { background: @BG_ELEV@; border: 1px solid @BORDER_STRONG@; border-radius: 10px; }
+
+      /* ---- Chart toolbar ---- */
+      QFrame#chartToolbar { background: @BG_PANEL@; border: 1px solid @BORDER@; border-radius: 10px; }
+      QPushButton#tfButton {
+        background: transparent; border: 1px solid transparent; border-radius: 7px; color: @TXT2@;
+        padding: 0 10px; font-weight: 600;
+      }
+      QPushButton#tfButton:hover { background: @BG_HOVER@; color: @TXT@; }
+      QPushButton#tfButton:checked { background: @BRAND_SOFT@; color: @BRAND_HOVER@; border-color: @BRAND@; }
+      QPushButton#toolButton {
+        background: @BG_ELEV@; border: 1px solid @BORDER@; border-radius: 7px; color: @TXT@;
+        padding: 5px 12px; font-weight: 500;
+      }
+      QPushButton#toolButton:hover { background: @BG_HOVER@; border-color: @BORDER_STRONG@; }
+      QPushButton#toolButton:checked { background: @BRAND@; color: #ffffff; border-color: @BRAND@; }
+      QPushButton#toolButton::menu-indicator { image: none; width: 0; }
+      QPushButton#collapseButton {
+        background: transparent; border: 1px solid @BORDER@; border-radius: 7px; color: @TXT2@;
+      }
+      QPushButton#collapseButton:hover { background: @BG_HOVER@; color: @TXT@; }
+
+      /* ---- Legend ---- */
+      QFrame#chartLegend { background: transparent; }
+      QLabel#legendSymbol { color: @TXT@; font-weight: 600; font-size: 13px; }
+      QLabel#legendOhlc { color: @TXT2@; font-family: "JetBrains Mono", "Consolas", monospace; font-size: 12px; }
+      QLabel#legendMuted { color: @TXT3@; font-size: 12px; }
+
+      /* ---- Subcharts ---- */
+      QFrame#subchartPane { background: @BG_PANEL@; border: 1px solid @BORDER@; border-radius: 8px; }
+      QFrame#subchartHeader { background: transparent; }
+      QLabel#subchartTitle { color: @TXT2@; font-weight: 600; }
+      QLabel#subchartPlaceholder { color: @TXT3@; }
+      QPushButton#subchartClose { background: transparent; border: none; border-radius: 5px; color: @TXT3@; }
+      QPushButton#subchartClose:hover { background: @RED@; color: #ffffff; }
+
+      /* ---- Replay bar ---- */
+      QFrame#replayBar { background: @BG_PANEL@; border: 1px solid @BORDER@; border-radius: 10px; }
+      QLabel#replayTitle { color: @TXT@; font-weight: 600; }
+      QLabel#replayInfo { color: @TXT2@; font-family: "JetBrains Mono", "Consolas", monospace; font-size: 12px; }
+      QPushButton#replayButton {
+        background: @BG_ELEV@; border: 1px solid @BORDER@; border-radius: 7px; color: @TXT@;
+      }
+      QPushButton#replayButton:hover { background: @BG_HOVER@; border-color: @BORDER_STRONG@; }
+      QPushButton#replayButton:checked { background: @BRAND@; border-color: @BRAND@; }
+      QSlider#replaySlider::groove:horizontal { height: 4px; background: @BORDER@; border-radius: 2px; }
+      QSlider#replaySlider::sub-page:horizontal { background: @BRAND@; border-radius: 2px; }
+      QSlider#replaySlider::handle:horizontal {
+        width: 14px; height: 14px; margin: -6px 0; border-radius: 7px; background: @BRAND_HOVER@;
+      }
+
+      /* ---- Right sidebar / tabs ---- */
+      QWidget#rightSidebar { background: @BG_PANEL@; border: 1px solid @BORDER@; border-radius: 10px; }
+      QTabWidget#rightTabs::pane { border: 0; background: transparent; }
+      QWidget#tabPage { background: transparent; }
+      QTabBar::tab {
+        background: transparent; color: @TXT3@; padding: 9px 14px; font-weight: 600;
+        border: 0; border-bottom: 2px solid transparent;
+      }
+      QTabBar::tab:hover { color: @TXT2@; }
+      QTabBar::tab:selected { color: @TXT@; border-bottom: 2px solid @BRAND@; }
+
+      QLabel#sectionLabel { color: @TXT@; font-weight: 700; font-size: 13px; }
+      QLabel#mutedLabel { color: @TXT3@; font-size: 12px; }
+      QLabel#fieldLabel { color: @TXT2@; font-size: 12px; }
+
+      QTableWidget#strategyTable, QTableWidget#logTable {
+        background: @BG_APP@; border: 1px solid @BORDER@; border-radius: 8px;
+        gridline-color: @BORDER@; color: @TXT@; selection-background-color: @BRAND_SOFT@;
+        selection-color: @TXT@;
+      }
+      QTableWidget#strategyTable::item, QTableWidget#logTable::item { padding: 4px 6px; }
+      QHeaderView::section {
+        background: @BG_ELEV@; color: @TXT2@; padding: 6px 8px; border: 0;
+        border-right: 1px solid @BORDER@; border-bottom: 1px solid @BORDER@; font-weight: 600;
+      }
+      QTableCornerButton::section { background: @BG_ELEV@; border: 0; }
+
+      QPushButton#strategyLoadButton {
+        background: @BRAND@; color: #ffffff; border: 0; border-radius: 8px; font-weight: 700; font-size: 13px;
+      }
+      QPushButton#strategyLoadButton:hover { background: @BRAND_HOVER@; }
+      QPushButton#strategyLoadButton:disabled { background: @BG_ELEV@; color: @TXT3@; }
+
+      QFrame#infoCard, QFrame#formCard { background: @BG_APP@; border: 1px solid @BORDER@; border-radius: 8px; }
+      QLabel#infoLine { color: @TXT2@; font-size: 12px; }
+
+      /* ---- Inputs ---- */
+      QLineEdit, QComboBox, QSpinBox, QDateTimeEdit, QPlainTextEdit {
+        background: @BG_APP@; border: 1px solid @BORDER@; border-radius: 7px; padding: 5px 9px; color: @TXT@;
+        selection-background-color: @BRAND@; selection-color: #ffffff;
+      }
+      QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDateTimeEdit:focus { border-color: @BRAND@; }
+      QComboBox::drop-down, QDateTimeEdit::drop-down { width: 22px; border: 0; background: transparent; }
+      QComboBox::down-arrow, QDateTimeEdit::down-arrow {
+        image: none; border-left: 4px solid transparent; border-right: 4px solid transparent;
+        border-top: 5px solid @TXT3@; width: 0; height: 0; margin-right: 6px;
+      }
+      QComboBox QAbstractItemView {
+        background: @BG_ELEV@; border: 1px solid @BORDER_STRONG@; border-radius: 8px;
+        color: @TXT@; selection-background-color: @BRAND_SOFT@; selection-color: @TXT@; outline: 0;
+      }
+      QSpinBox::up-button, QSpinBox::down-button { width: 16px; background: @BG_ELEV@; border: 0; }
+      QComboBox#logLevel { min-height: 26px; }
+
+      /* ---- Menus ---- */
+      QMenu { background: @BG_ELEV@; border: 1px solid @BORDER_STRONG@; border-radius: 8px; padding: 5px; }
+      QMenu::item { padding: 6px 22px; border-radius: 6px; color: @TXT@; }
+      QMenu::item:selected { background: @BRAND_SOFT@; }
+      QMenu::item:disabled { color: @TXT3@; }
+      QMenu::separator { height: 1px; background: @BORDER@; margin: 4px 8px; }
+
+      /* ---- Checkboxes ---- */
+      QCheckBox { color: @TXT@; spacing: 8px; }
+      QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid @BORDER_STRONG@; border-radius: 5px; background: @BG_APP@; }
+      QCheckBox::indicator:checked { background: @BRAND@; border-color: @BRAND@; }
+
+      /* ---- Scrollbars ---- */
+      QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+      QScrollBar::handle:vertical { background: @BORDER_STRONG@; border-radius: 5px; min-height: 28px; }
+      QScrollBar::handle:vertical:hover { background: @BRAND@; }
+      QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+      QScrollBar::handle:horizontal { background: @BORDER_STRONG@; border-radius: 5px; min-width: 28px; }
+      QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+      QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+
+      /* ---- Log panel ---- */
+      QFrame#logPanel { background: @BG_PANEL@; border-top: 1px solid @BORDER@; }
+      QFrame#logHeader { background: @BG_TOOLBAR@; border-bottom: 1px solid @BORDER@; }
+      QLabel#statInfo { color: @TXT2@; font-size: 11px; }
+      QLabel#statWarn { color: @ORANGE_PLACEHOLDER@; font-size: 11px; }
+      QLabel#statError { color: @RED@; font-size: 11px; }
+      QLabel#statDebug { color: @TXT3@; font-size: 11px; }
+
+      /* ---- Dialogs / popover ---- */
+      QFrame#settingsPopover { background: @BG_ELEV@; border: 1px solid @BORDER_STRONG@; border-radius: 12px; }
+      QDialog { background: @BG_PANEL@; }
+      QLabel#dialogTitle { color: @TXT@; font-size: 16px; font-weight: 700; }
+      QGroupBox {
+        background: @BG_APP@; border: 1px solid @BORDER@; border-radius: 8px;
+        margin-top: 10px; padding: 10px 12px 12px 12px; color: @TXT2@; font-weight: 600;
+      }
+      QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
+      QWidget#customIndicatorList { background: transparent; }
+      QFrame#indicatorCard { background: @BG_APP@; border: 1px solid @BORDER@; border-radius: 8px; }
+      QPlainTextEdit#errorBox {
+        background: @BG_APP@; border: 1px solid @BORDER@; border-radius: 8px; color: @RED@;
+        font-family: "JetBrains Mono", "Consolas", monospace; font-size: 12px;
+      }
+      QDialogButtonBox QPushButton {
+        background: @BG_ELEV@; border: 1px solid @BORDER@; border-radius: 7px; color: @TXT@;
+        padding: 6px 18px; min-height: 26px;
+      }
+      QDialogButtonBox QPushButton:hover { background: @BG_HOVER@; border-color: @BORDER_STRONG@; }
+
+      /* ---- Status bar ---- */
+      QStatusBar { background: @HEADER_BG@; border-top: 1px solid @BORDER@; color: @TXT2@; }
+      QStatusBar::item { border: 0; }
+      QStatusBar QLabel { color: @TXT2@; font-size: 12px; }
+      QLabel#sbItem { color: @TXT2@; padding: 0 8px; }
+      QLabel#sbConnected { color: @GREEN@; padding: 0 8px; font-weight: 600; }
+      QLabel#sbDisconnected { color: @TXT3@; padding: 0 8px; }
+    )CSS");
+    t["ORANGE_PLACEHOLDER"] = Theme::orange();
+    for (auto it = t.constBegin(); it != t.constEnd(); ++it) {
+      css.replace("@" + it.key() + "@", it.value());
+    }
+    return css;
   }
 
   QString newDarkThemeCss() const {
@@ -2357,7 +2776,9 @@ plotshape(marks, {
       setGeometry(target);
       maximizedAnimated_ = true;
     }
-    if (maximize_) maximize_->setText(maximizedAnimated_ ? "❐" : "□");
+#ifndef Q_OS_MACOS
+    if (maximize_) maximize_->setIcon(themedIcon(maximizedAnimated_ ? "restore" : "square", 15));
+#endif
   }
 
   QString darkCss() const {
@@ -3292,24 +3713,61 @@ plotshape(marks, {
     return "INFO";
   }
 
+  // Heuristically derive the originating module from the message text.
+  QString deriveLogModule(const QString &message) const {
+    const QString lower = message.toLower();
+    if (lower.contains("ws") || lower.contains("websocket") || message.contains("实时") || message.contains("推送")) return "WS";
+    if (message.startsWith("Chart") || lower.contains("upsert") || message.contains("K线") || lower.contains("candle")) return "Chart";
+    if (message.contains("指标") || lower.contains("indicator") || lower.contains("fvg")) return "Indicator";
+    if (message.contains("更新") || lower.contains("update") || lower.contains("version")) return "Update";
+    if (lower.contains("http") || lower.contains("/api") || lower.contains("api") || message.contains("接口")
+        || message.contains("加载") || message.contains("策略") || message.contains("请求")) return "HTTP";
+    return "App";
+  }
+
+  QColor logLevelColor(const QString &level) const {
+    if (level == "ERROR") return dark_ ? Theme::cRed() : QColor("#E02D3C");
+    if (level == "WARN") return Theme::cOrange();
+    if (level == "DEBUG") return dark_ ? Theme::cTextMuted() : QColor(Theme::lTextMuted());
+    return dark_ ? Theme::cGreen() : QColor("#0E9F6E");
+  }
+
+  void appendLogRow(const LogEntry &entry) {
+    if (!logTable_ || !logLevelMatches(entry.level)) return;
+    QScrollBar *bar = logTable_->verticalScrollBar();
+    const bool atBottom = !bar || bar->value() >= bar->maximum() - 2;
+    const int row = logTable_->rowCount();
+    logTable_->insertRow(row);
+    auto *timeItem = new QTableWidgetItem(entry.time);
+    auto *levelItem = new QTableWidgetItem(entry.level);
+    levelItem->setForeground(logLevelColor(entry.level));
+    auto *moduleItem = new QTableWidgetItem(entry.module);
+    moduleItem->setForeground(dark_ ? Theme::cTextSecondary() : QColor(Theme::lTextSecondary()));
+    auto *msgItem = new QTableWidgetItem(entry.message);
+    logTable_->setItem(row, 0, timeItem);
+    logTable_->setItem(row, 1, levelItem);
+    logTable_->setItem(row, 2, moduleItem);
+    logTable_->setItem(row, 3, msgItem);
+    if (atBottom) logTable_->scrollToBottom();
+  }
+
   void appendDebugLog(const QString &message) {
-    const QString level = classifyLogLevel(message);
-    const QString stamped = QString("%1 %2 %3")
-      .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz"), level, message);
-    logEntries_.append({level, stamped});
-    if (logEntries_.size() > 5000) logEntries_.removeFirst();
-    if (level == "ERROR") ++logError_;
-    else if (level == "WARN") ++logWarn_;
-    else if (level == "DEBUG") ++logDebug_;
+    LogEntry entry;
+    entry.time = QDateTime::currentDateTime().toString("HH:mm:ss.zzz");
+    entry.level = classifyLogLevel(message);
+    entry.module = deriveLogModule(message);
+    entry.message = message;
+    logEntries_.append(entry);
+    if (logEntries_.size() > 5000) {
+      logEntries_.removeFirst();
+      if (logTable_ && logTable_->rowCount() > 0) logTable_->removeRow(0);
+    }
+    if (entry.level == "ERROR") ++logError_;
+    else if (entry.level == "WARN") ++logWarn_;
+    else if (entry.level == "DEBUG") ++logDebug_;
     else ++logInfo_;
     updateLogStats();
-    if (!debugLog_) return;
-    if (logLevelMatches(level)) {
-      QScrollBar *bar = debugLog_->verticalScrollBar();
-      const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
-      debugLog_->appendPlainText(stamped);
-      if (wasAtBottom && bar) bar->setValue(bar->maximum());
-    }
+    appendLogRow(entry);
   }
 
   bool logLevelMatches(const QString &level) const {
@@ -3319,13 +3777,9 @@ plotshape(marks, {
   }
 
   void renderLogView() {
-    if (!debugLog_) return;
-    QStringList lines;
-    for (const auto &entry : logEntries_) {
-      if (logLevelMatches(entry.first)) lines << entry.second;
-    }
-    debugLog_->setPlainText(lines.join('\n'));
-    if (QScrollBar *bar = debugLog_->verticalScrollBar()) bar->setValue(bar->maximum());
+    if (!logTable_) return;
+    logTable_->setRowCount(0);
+    for (const LogEntry &entry : logEntries_) appendLogRow(entry);
   }
 
   void updateLogStats() {
@@ -3336,7 +3790,7 @@ plotshape(marks, {
   }
 
   void exportLogs() {
-    const QString path = QFileDialog::getSaveFileName(this, "导出日志", "service-log.log", "Log Files (*.log);;All Files (*)");
+    const QString path = QFileDialog::getSaveFileName(this, "导出日志", "service-log.tsv", "TSV Files (*.tsv);;Log Files (*.log);;All Files (*)");
     if (path.isEmpty()) return;
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -3344,7 +3798,10 @@ plotshape(marks, {
       return;
     }
     QStringList lines;
-    for (const auto &entry : logEntries_) lines << entry.second;
+    lines << "时间\t级别\t模块\t信息";
+    for (const LogEntry &e : logEntries_) {
+      lines << QString("%1\t%2\t%3\t%4").arg(e.time, e.level, e.module, e.message);
+    }
     file.write(lines.join('\n').toUtf8());
     file.close();
   }
@@ -3354,10 +3811,10 @@ plotshape(marks, {
     if (collapsed) {
       rightSidebarWidth_ = std::max(280, rightSidebar_->width());
       rightSidebar_->hide();
-      if (rightToggleBtn_) rightToggleBtn_->setText("‹");
+      if (rightToggleBtn_) registerIcon(rightToggleBtn_, "chevron-left", 16);
     } else {
       rightSidebar_->show();
-      if (rightToggleBtn_) rightToggleBtn_->setText("›");
+      if (rightToggleBtn_) registerIcon(rightToggleBtn_, "chevron-right", 16);
       QTimer::singleShot(0, this, [this] {
         bodySplitter_->setSizes({std::max(400, bodySplitter_->width() - rightSidebarWidth_), rightSidebarWidth_});
       });
@@ -3366,16 +3823,24 @@ plotshape(marks, {
   }
 
   void setLogCollapsed(bool collapsed) {
-    if (!logBody_) return;
+    if (!logBody_ || !logPanel_ || !mainSplitter_) return;
     if (collapsed) {
+      const int h = logPanel_->height();
+      if (h > 48) logExpandedHeight_ = h;
       logBody_->hide();
       logPanel_->setMaximumHeight(34);
-      if (logCollapseBtn_) logCollapseBtn_->setText("⌃");
+      logPanel_->setMinimumHeight(34);
+      if (logCollapseBtn_) registerIcon(logCollapseBtn_, "chevron-up", 14);
     } else {
       logBody_->show();
+      logPanel_->setMinimumHeight(120);
       logPanel_->setMaximumHeight(QWIDGETSIZE_MAX);
-      if (logCollapseBtn_) logCollapseBtn_->setText("⌄");
-      QTimer::singleShot(0, this, [this] { mainSplitter_->setSizes({760, 220}); });
+      if (logCollapseBtn_) registerIcon(logCollapseBtn_, "chevron-down", 14);
+      const int target = std::max(160, logExpandedHeight_);
+      QTimer::singleShot(0, this, [this, target] {
+        const int total = mainSplitter_->height();
+        mainSplitter_->setSizes({std::max(200, total - target), target});
+      });
     }
     saveLayoutSettings();
   }
@@ -3647,14 +4112,13 @@ plotshape(marks, {
 
   void updateReplayUi() {
     if (replayToggle_) replayToggle_->setText(replayActive_ ? "退出回放" : "K线回放");
-    if (replayPlay_) replayPlay_->setText(replayTimer_.isActive() ? "⏸" : "▶");
+    if (replayPlay_) registerIcon(replayPlay_, replayTimer_.isActive() ? "pause" : "play", 16);
     const QString startText = loadedCandles_.isEmpty() ? "--" : formatDisplayTime(loadedCandles_.first().ms, "yyyy-MM-dd HH:mm");
     const qint64 cursor = replayCursorMs();
     const QString curText = formatDisplayTime(cursor, "yyyy-MM-dd HH:mm");
     if (replayStartLabel_) replayStartLabel_->setText("起点 " + startText);
     if (replayCurrentLabel_) replayCurrentLabel_->setText("当前 " + curText);
-    if (infoStart_) infoStart_->setText("起点：" + startText);
-    if (infoCurrent_) infoCurrent_->setText("当前：" + curText);
+    if (infoStart_) infoStart_->setText("数据起点：" + startText);
     updateReplaySlider();
   }
 
@@ -3782,16 +4246,14 @@ plotshape(marks, {
   void updateLegendSymbol() {
     if (!legendSymbol_) return;
     legendSymbol_->setText(QString("%1 · %2 · %3")
-      .arg(symbol_->text(), timeframeLabel(currentTimeframe_), exchange_ ? exchange_->currentText().section(' ', 0, 0) : QString("Binance")));
+      .arg(symbol_->text(), timeframeLabel(currentTimeframe_), QString("Binance")));
     if (summarySymbol_) summarySymbol_->setText(symbol_->text());
   }
 
   ChartWidget *chart_ = nullptr;
   QFrame *titleBar_ = nullptr;
   QFrame *annotationToolbar_ = nullptr;
-  QButtonGroup *annotationGroup_ = nullptr;
   QLineEdit *symbol_ = nullptr;
-  QComboBox *exchange_ = nullptr;
   QComboBox *strategy_ = nullptr;
   QComboBox *timeZone_ = nullptr;
   QDateTimeEdit *replayTime_ = nullptr;
@@ -3810,14 +4272,13 @@ plotshape(marks, {
   QLabel *replayTitleLabel_ = nullptr;
   QPushButton *backend_ = nullptr;
   QPushButton *updateButton_ = nullptr;
-  QPushButton *magnetButton_ = nullptr;
+  QToolButton *magnetButton_ = nullptr;
   QPushButton *refresh_ = nullptr;
   QPushButton *notifyButton_ = nullptr;
   QPushButton *settingsGear_ = nullptr;
   QPushButton *minimize_ = nullptr;
   QPushButton *maximize_ = nullptr;
   QPushButton *close_ = nullptr;
-  QLabel *status_ = nullptr;
   QLabel *ohlc_ = nullptr;
   QLabel *range_ = nullptr;
   QLabel *events_ = nullptr;
@@ -3874,15 +4335,16 @@ plotshape(marks, {
   QLabel *statWarn_ = nullptr;
   QLabel *statError_ = nullptr;
   QLabel *statDebug_ = nullptr;
-  QVector<QPair<QString, QString>> logEntries_;
+  struct LogEntry { QString time; QString level; QString module; QString message; };
+  QVector<LogEntry> logEntries_;
+  QTableWidget *logTable_ = nullptr;
   int logInfo_ = 0;
   int logWarn_ = 0;
   int logError_ = 0;
   int logDebug_ = 0;
+  int logExpandedHeight_ = 220;
   int replaySpeedValue_ = 10;
   QDialog *indicatorDialog_ = nullptr;
-  QDialog *backendDialog_ = nullptr;
-  QPlainTextEdit *debugLog_ = nullptr;
   QPlainTextEdit *indicatorErrorText_ = nullptr;
   QWidget *customIndicatorList_ = nullptr;
   QVBoxLayout *customIndicatorLayout_ = nullptr;
@@ -3915,4 +4377,12 @@ plotshape(marks, {
   QRect normalGeometry_;
   bool maximizedAnimated_ = false;
   QPropertyAnimation *windowAnimation_ = nullptr;
+  QVector<QAbstractButton *> iconButtons_;
+  QVector<QToolButton *> drawingButtons_;
+  QStatusBar *statusBar_ = nullptr;
+  QLabel *sbConnection_ = nullptr;
+  QLabel *sbBackend_ = nullptr;
+  QLabel *sbRealtime_ = nullptr;
+  QLabel *sbLatency_ = nullptr;
+  QFrame *replayBar_ = nullptr;
 };
