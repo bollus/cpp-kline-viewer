@@ -99,7 +99,7 @@ public:
   bool realtimeEnabled() const { return realtime_; }
 
   QString layoutId() const { return layoutId_; }
-  void setLayout(const QString &id) {
+  Q_INVOKABLE void setLayout(const QString &id) {
     const QString resolved = layoutViewCount(id) > 0 ? id : QStringLiteral("1");
     if (layoutId_ == resolved) return;
     layoutId_ = resolved;

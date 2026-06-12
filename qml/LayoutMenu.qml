@@ -71,7 +71,7 @@ Popup {
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
-                        onClicked: { controller.setLayout(modelData); root.close() }
+                        onClicked: { controller.layoutId = modelData; root.close() }
                     }
                 }
             }
