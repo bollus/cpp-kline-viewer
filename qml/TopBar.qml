@@ -121,25 +121,25 @@ Rectangle {
             font.pixelSize: 12
         }
 
-        IconButton { icon: "refresh"; tip: "刷新"; onClicked: controller.refresh() }
-        IconButton { icon: "bell"; tip: "通知" }
+        IconButton { iconName: "refresh"; tip: "刷新"; onClicked: controller.refresh() }
+        IconButton { iconName: "bell"; tip: "通知" }
         IconButton {
-            icon: theme.dark ? "eye" : "settings"
+            iconName: theme.dark ? "eye" : "settings"
             tip: theme.dark ? "切换浅色" : "切换深色"
             onClicked: { theme.dark = !theme.dark; controller.dark = theme.dark }
         }
-        IconButton { icon: "settings"; tip: "设置"; onClicked: root.openSettings() }
+        IconButton { iconName: "settings"; tip: "设置"; onClicked: root.openSettings() }
 
         // Window controls
         Rectangle { width: 1; height: 24; color: theme.borderSubtle }
-        IconButton { icon: "minus"; px: 14; onClicked: root.requestMinimize() }
+        IconButton { iconName: "minus"; px: 14; onClicked: root.requestMinimize() }
         IconButton {
-            icon: Window.window && Window.window.visibility === Window.Maximized ? "restore" : "square"
+            iconName: Window.window && Window.window.visibility === Window.Maximized ? "restore" : "square"
             px: 13
             onClicked: root.requestMaximize()
         }
         IconButton {
-            icon: "close"; px: 14
+            iconName: "close"; px: 14
             hoverBg: theme.red
             onClicked: root.requestClose()
         }

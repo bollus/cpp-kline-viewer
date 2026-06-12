@@ -52,10 +52,10 @@ Rectangle {
                     model: ["全部", "INFO", "WARN", "ERROR", "DEBUG"]
                     onActivated: controller.logModel.filterLevel = currentText
                 }
-                IconButton { icon: "trash"; px: 15; tip: "清空"; onClicked: controller.logModel.clear() }
-                IconButton { icon: "download"; px: 15; tip: "导出"; onClicked: root.requestExport() }
+                IconButton { iconName: "trash"; px: 15; tip: "清空"; onClicked: controller.logModel.clear() }
+                IconButton { iconName: "download"; px: 15; tip: "导出"; onClicked: root.requestExport() }
                 IconButton {
-                    icon: root.collapsed ? "chevron-up" : "chevron-down"
+                    iconName: root.collapsed ? "chevron-up" : "chevron-down"
                     px: 15
                     tip: root.collapsed ? "展开" : "收起"
                     onClicked: root.collapsed = !root.collapsed

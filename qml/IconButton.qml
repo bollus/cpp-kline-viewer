@@ -5,7 +5,7 @@ import QtQuick.Controls
 AbstractButton {
     id: control
 
-    property string icon: ""
+    property string iconName: ""
     property string role: "secondary"
     property int px: 18
     property string tip: ""
@@ -33,7 +33,7 @@ AbstractButton {
             height: control.px
             sourceSize.width: control.px
             sourceSize.height: control.px
-            source: theme.icon(control.icon,
+            source: theme.icon(control.iconName,
                                control.active ? "brand" : (control.hovered ? "primary" : control.role),
                                control.px)
         }

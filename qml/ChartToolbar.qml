@@ -114,7 +114,7 @@ Rectangle {
         }
 
         IconButton {
-            icon: "chevron-right"
+            iconName: "chevron-right"
             tip: "折叠侧栏"
             onClicked: root.toggleSidebar()
         }

@@ -21,16 +21,16 @@ Rectangle {
         anchors.rightMargin: 12
         spacing: 10
 
-        IconButton { icon: "skip-back"; tip: "回到起点"; onClicked: controller.replayJumpToStart() }
-        IconButton { icon: "chevron-left"; tip: "上一根"; onClicked: controller.replayStepBackward() }
+        IconButton { iconName: "skip-back"; tip: "回到起点"; onClicked: controller.replayJumpToStart() }
+        IconButton { iconName: "chevron-left"; tip: "上一根"; onClicked: controller.replayStepBackward() }
         IconButton {
-            icon: controller.replayPlaying ? "pause" : "play"
+            iconName: controller.replayPlaying ? "pause" : "play"
             tip: controller.replayPlaying ? "暂停" : "播放"
             role: "primary"
             onClicked: controller.replayPlayPause()
         }
-        IconButton { icon: "chevron-right"; tip: "下一根"; onClicked: controller.replayStepForward() }
-        IconButton { icon: "skip-forward"; tip: "跳到末尾"; onClicked: controller.replayJumpToEnd() }
+        IconButton { iconName: "chevron-right"; tip: "下一根"; onClicked: controller.replayStepForward() }
+        IconButton { iconName: "skip-forward"; tip: "跳到末尾"; onClicked: controller.replayJumpToEnd() }
 
         Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 22; color: theme.borderSubtle }
 

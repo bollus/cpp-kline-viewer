@@ -30,7 +30,7 @@ Rectangle {
         IconButton {
             anchors.fill: parent
             anchors.margins: 3
-            icon: group.current.icon !== undefined ? group.current.icon : "cursor"
+            iconName: group.current.icon !== undefined ? group.current.icon : "cursor"
             tip: group.current.tip !== undefined ? group.current.tip : ""
             active: group.selected
             enabled: group.current.enabled !== false
@@ -62,7 +62,7 @@ Rectangle {
                 Repeater {
                     model: group.variants
                     IconButton {
-                        icon: modelData.icon
+                        iconName: modelData.icon
                         tip: modelData.tip
                         enabled: modelData.enabled !== false
                         active: controller.annotationTool === modelData.tool
@@ -121,7 +121,7 @@ Rectangle {
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: 4
         IconButton {
-            icon: "magnet"
+            iconName: "magnet"
             tip: "磁吸"
             active: controller.magnetEnabled
             onClicked: controller.magnetEnabled = !controller.magnetEnabled
