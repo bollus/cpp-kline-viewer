@@ -61,21 +61,28 @@ public:
   int debugCount() const { return debug_; }
 
   void append(const QString &level, const QString &module, const QString &message) {
+    static constexpr int kMaxEntries = 5000;
     Entry e{QDateTime::currentDateTime().toString("HH:mm:ss.zzz"), level, module, message};
     entries_.append(e);
-    if (entries_.size() > 5000) entries_.removeFirst();
-    if (level == "ERROR") ++error_;
-    else if (level == "WARN") ++warn_;
-    else if (level == "DEBUG") ++debug_;
-    else ++info_;
+    bumpStat(level, +1);
+
+    bool removedOldest = false;
+    if (entries_.size() > kMaxEntries) {
+      bumpStat(entries_.first().level, -1);
+      entries_.removeFirst();
+      removedOldest = true;
+    }
     emit statsChanged();
-    if (matches(level)) {
+
+    // When the oldest entry is evicted every cached filtered_ index shifts, so
+    // a full rebuild is the safe path; otherwise just append the new row.
+    if (removedOldest) {
+      rebuildFiltered();
+    } else if (matches(level)) {
       const int row = filtered_.size();
       beginInsertRows({}, row, row);
       filtered_.append(entries_.size() - 1);
       endInsertRows();
-    } else if (entries_.size() > 5000) {
-      rebuildFiltered();
     }
   }
 
@@ -104,6 +111,13 @@ signals:
 
 private:
   bool matches(const QString &level) const { return filter_.isEmpty() || filter_ == "全部" || filter_ == level; }
+
+  void bumpStat(const QString &level, int delta) {
+    if (level == "ERROR") error_ += delta;
+    else if (level == "WARN") warn_ += delta;
+    else if (level == "DEBUG") debug_ += delta;
+    else info_ += delta;
+  }
 
   void rebuildFiltered() {
     beginResetModel();

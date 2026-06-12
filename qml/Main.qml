@@ -19,8 +19,12 @@ ApplicationWindow {
     property bool sidebarVisible: true
 
     function toggleMaximize() {
-        appWindow.visibility = (appWindow.visibility === Window.Maximized)
-            ? Window.Windowed : Window.Maximized
+        // showMaximized()/showNormal() honour the screen's available geometry,
+        // so a frameless window no longer slides under the macOS menu bar.
+        if (appWindow.visibility === Window.Maximized)
+            appWindow.showNormal()
+        else
+            appWindow.showMaximized()
     }
 
     ColumnLayout {
@@ -50,8 +54,8 @@ ApplicationWindow {
                 ChartToolbar {
                     Layout.fillWidth: true
                     onToggleSidebar: appWindow.sidebarVisible = !appWindow.sidebarVisible
-                    onOpenIndicators: indicatorDialog.open()
-                    onOpenCustomIndicators: indicatorDialog.open()
+                    onOpenIndicators: indicatorDialog.openAt(0)
+                    onOpenCustomIndicators: indicatorDialog.openAt(1)
                 }
 
                 Rectangle {
@@ -107,42 +111,60 @@ ApplicationWindow {
         id: settingsPopover
         x: appWindow.width - width - 12
         y: 56
-        width: 240
-        padding: 12
+        width: 280
+        padding: 14
         background: Rectangle { color: theme.bgElevated; border.color: theme.borderSubtle; radius: 10 }
         contentItem: ColumnLayout {
-            spacing: 10
+            spacing: 12
             Text { text: "设置"; color: theme.textPrimary; font.pixelSize: 14; font.bold: true }
-            RowLayout {
+
+            Rectangle { Layout.fillWidth: true; height: 1; color: theme.borderSubtle }
+
+            // Update check
+            ColumnLayout {
                 Layout.fillWidth: true
-                Text { text: "深色模式"; color: theme.textSecondary; font.pixelSize: 12; Layout.fillWidth: true }
-                Switch {
-                    checked: theme.dark
-                    onToggled: { theme.dark = checked; controller.dark = checked }
+                spacing: 6
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text { text: "软件更新"; color: theme.textSecondary; font.pixelSize: 12; Layout.fillWidth: true }
+                    Text { text: "v" + controller.appVersion; color: theme.textMuted; font.pixelSize: 11 }
+                }
+                Text {
+                    text: controller.updateStatus
+                    color: controller.updateAvailable ? theme.brandBlue : theme.textMuted
+                    font.pixelSize: 11
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Button {
+                        text: controller.updateChecking ? "检查中..." : "检查更新"
+                        enabled: !controller.updateChecking
+                        font.pixelSize: 12
+                        onClicked: controller.checkForUpdates()
+                        contentItem: Text { text: parent.text; color: theme.textPrimary; font: parent.font; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 6; color: parent.hovered ? theme.bgHover : theme.bgPanel2; border.color: theme.borderSubtle; implicitHeight: 28 }
+                    }
+                    Button {
+                        visible: controller.updateAvailable
+                        text: "前往下载"
+                        font.pixelSize: 12
+                        onClicked: controller.openDownloadPage()
+                        contentItem: Text { text: parent.text; color: "#FFFFFF"; font: parent.font; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 6; color: theme.brandBlue; implicitHeight: 28 }
+                    }
                 }
             }
+
+            Rectangle { Layout.fillWidth: true; height: 1; color: theme.borderSubtle }
             Text { text: "AlgoHub · 量化复盘终端"; color: theme.textMuted; font.pixelSize: 11 }
         }
     }
 
-    // ---- Indicator dialog (basic shell) ----
-    Dialog {
-        id: indicatorDialog
-        anchors.centerIn: parent
-        width: 420
-        modal: true
-        title: "指标"
-        standardButtons: Dialog.Close
-        background: Rectangle { color: theme.bgElevated; border.color: theme.borderSubtle; radius: 10 }
-        contentItem: ColumnLayout {
-            spacing: 8
-            Text {
-                text: "指标与自定义指标管理将在此处提供。"
-                color: theme.textSecondary; font.pixelSize: 12; wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-            }
-        }
-    }
+    // ---- Indicator dialog ----
+    IndicatorDialog { id: indicatorDialog }
 
     FileDialog {
         id: exportDialog

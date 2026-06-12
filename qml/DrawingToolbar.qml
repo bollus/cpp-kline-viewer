@@ -84,7 +84,6 @@ Rectangle {
         spacing: 4
 
         ToolGroup { variants: [{ tool: 0, icon: "cursor", tip: "光标" }] }
-        ToolGroup { variants: [{ tool: -1, icon: "crosshair", tip: "十字光标", enabled: false }] }
 
         Rectangle { Layout.preferredWidth: 24; Layout.preferredHeight: 1; Layout.alignment: Qt.AlignHCenter; color: theme.borderSubtle }
 

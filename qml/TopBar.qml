@@ -89,20 +89,31 @@ Rectangle {
 
         // Market summary
         ColumnLayout {
-            spacing: 0
-            Text {
-                text: controller.symbol + " · " + controller.timeframeLabel
-                color: theme.textSecondary
-                font.pixelSize: 11
-            }
             RowLayout {
-                spacing: 8
+                spacing: 8  // 元素间距，可调节
+
+                // Symbol
+                Text {
+                    text: controller.symbol
+                    color: theme.textSecondary
+                    font.pixelSize: 12
+                }
+
+                // 空格或制表符
+                Text {
+                    text: " "  // 或 "\t" 看效果
+                    font.pixelSize: 12
+                }
+
+                // Market Price
                 Text {
                     text: controller.marketPrice
                     color: controller.marketUp ? theme.green : theme.red
                     font.pixelSize: 15
                     font.bold: true
                 }
+
+                // 浮动变化
                 Text {
                     text: controller.marketChange
                     color: controller.marketUp ? theme.green : theme.red

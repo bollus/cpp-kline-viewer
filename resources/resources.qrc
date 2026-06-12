@@ -42,5 +42,6 @@
     <file alias="download.svg">icons/download.svg</file>
     <file alias="calendar.svg">icons/calendar.svg</file>
     <file alias="search.svg">icons/search.svg</file>
+    <file alias="check.svg">icons/check.svg</file>
   </qresource>
 </RCC>

@@ -6,12 +6,27 @@
 #include <QTimeZone>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonDocument>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QVersionNumber>
+#include <QRegularExpression>
 #include <algorithm>
 
 #include "candle_client.hpp"
 #include "chart_item.hpp"
 #include "models.hpp"
 #include "theme.hpp"
+
+#ifndef Q4J_APP_VERSION
+#define Q4J_APP_VERSION "1.0.0"
+#endif
+#ifndef Q4J_UPDATE_REPO
+#define Q4J_UPDATE_REPO ""
+#endif
 
 // Owns all non-UI application logic that used to live in MainWindow: backend
 // configuration, candle/strategy loading, the replay engine, persistence,
@@ -52,8 +67,18 @@ class AppController : public QObject {
   Q_PROPERTY(QString replayCursorText READ replayCursorText NOTIFY replayChanged)
   Q_PROPERTY(qint64 replayCursorMs READ replayCursorMs WRITE setReplayCursorMs NOTIFY replayChanged)
 
+  Q_PROPERTY(QDateTime replayCursorDateTime READ replayCursorDateTime NOTIFY replayChanged)
+  Q_PROPERTY(QDateTime replayMinDateTime READ replayMinDateTime NOTIFY replayChanged)
+  Q_PROPERTY(QDateTime replayMaxDateTime READ replayMaxDateTime NOTIFY replayChanged)
+
   Q_PROPERTY(bool magnetEnabled READ magnetEnabled WRITE setMagnetEnabled NOTIFY magnetChanged)
   Q_PROPERTY(int annotationTool READ annotationTool WRITE setAnnotationTool NOTIFY annotationToolChanged)
+
+  Q_PROPERTY(QString appVersion READ appVersion CONSTANT)
+  Q_PROPERTY(QString updateStatus READ updateStatus NOTIFY updateChanged)
+  Q_PROPERTY(bool updateChecking READ updateChecking NOTIFY updateChanged)
+  Q_PROPERTY(bool updateAvailable READ updateAvailable NOTIFY updateChanged)
+  Q_PROPERTY(QString latestVersion READ latestVersion NOTIFY updateChanged)
 
 public:
   explicit AppController(QObject *parent = nullptr) : QObject(parent) {
@@ -177,6 +202,16 @@ public:
   }
 
   QString replayCursorText() const { return formatTime(replayCursorMs_, "yyyy-MM-dd HH:mm"); }
+
+  QDateTime replayCursorDateTime() const { return msToZoned(replayCursorMs_ > 0 ? replayCursorMs_ : (loaded_.isEmpty() ? 0 : loaded_.first().ms)); }
+  QDateTime replayMinDateTime() const { return msToZoned(loaded_.isEmpty() ? 0 : loaded_.first().ms); }
+  QDateTime replayMaxDateTime() const { return msToZoned(loaded_.isEmpty() ? 0 : loaded_.last().ms); }
+
+  QString appVersion() const { return QStringLiteral(Q4J_APP_VERSION); }
+  QString updateStatus() const { return updateStatus_; }
+  bool updateChecking() const { return updateChecking_; }
+  bool updateAvailable() const { return updateAvailable_; }
+  QString latestVersion() const { return latestVersion_; }
 
   bool magnetEnabled() const { return magnetEnabled_; }
   void setMagnetEnabled(bool value) {
@@ -310,6 +345,78 @@ public:
     emit replayChanged();
   }
 
+  // Jump the replay cursor to a wall-clock datetime (from the QML date picker).
+  Q_INVOKABLE void setReplayCursorDateTime(const QDateTime &dt) {
+    if (!dt.isValid()) return;
+    QTimeZone zone(timeZoneId_);
+    if (!zone.isValid()) zone = QTimeZone::systemTimeZone();
+    QDateTime zoned = dt;
+    zoned.setTimeZone(zone);
+    qint64 ms = zoned.toMSecsSinceEpoch();
+    if (!loaded_.isEmpty()) ms = std::clamp(ms, loaded_.first().ms, loaded_.last().ms);
+    ensureReplay();
+    setReplayCursorMs(ms);
+  }
+
+  // Parse a "yyyy-MM-dd HH:mm" string typed by the user.
+  Q_INVOKABLE void setReplayCursorText(const QString &text) {
+    QDateTime dt = QDateTime::fromString(text.trimmed(), "yyyy-MM-dd HH:mm");
+    if (!dt.isValid()) dt = QDateTime::fromString(text.trimmed(), "yyyy-MM-dd HH:mm:ss");
+    setReplayCursorDateTime(dt);
+  }
+
+  // ---- Update check --------------------------------------------------------
+  Q_INVOKABLE void checkForUpdates() {
+    const QString repo = QStringLiteral(Q4J_UPDATE_REPO);
+    if (repo.isEmpty()) {
+      updateStatus_ = "未配置更新源";
+      updateChecking_ = false;
+      updateAvailable_ = false;
+      emit updateChanged();
+      return;
+    }
+    if (updateChecking_) return;
+    updateChecking_ = true;
+    updateAvailable_ = false;
+    updateStatus_ = "正在检查更新...";
+    emit updateChanged();
+
+    QNetworkRequest req(QUrl(QString("https://api.github.com/repos/%1/releases/latest").arg(repo)));
+    req.setRawHeader("Accept", "application/vnd.github+json");
+    req.setRawHeader("User-Agent", "AlgoHub-KLineViewer");
+    QNetworkReply *reply = net_.get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+      reply->deleteLater();
+      updateChecking_ = false;
+      if (reply->error() != QNetworkReply::NoError) {
+        updateStatus_ = "检查更新失败：" + reply->errorString();
+        emit updateChanged();
+        return;
+      }
+      const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+      const QString tag = obj.value("tag_name").toString();
+      downloadUrl_ = obj.value("html_url").toString();
+      latestVersion_ = tag;
+      const QVersionNumber latest = QVersionNumber::fromString(QString(tag).remove(QRegularExpression("^[vV]")));
+      const QVersionNumber current = QVersionNumber::fromString(appVersion());
+      if (!latest.isNull() && latest > current) {
+        updateAvailable_ = true;
+        updateStatus_ = QString("发现新版本 %1").arg(tag);
+      } else {
+        updateAvailable_ = false;
+        updateStatus_ = QString("已是最新版本 (%1)").arg(appVersion());
+      }
+      emit updateChanged();
+    });
+  }
+
+  Q_INVOKABLE void openDownloadPage() {
+    const QString url = downloadUrl_.isEmpty()
+        ? QString("https://github.com/%1/releases/latest").arg(QStringLiteral(Q4J_UPDATE_REPO))
+        : downloadUrl_;
+    QDesktopServices::openUrl(QUrl(url));
+  }
+
 signals:
   void chartChanged();
   void darkChanged();
@@ -327,8 +434,16 @@ signals:
   void annotationToolChanged();
   void needsBackendConfig();
   void strategiesLoaded();
+  void updateChanged();
 
 private:
+  QDateTime msToZoned(qint64 ms) const {
+    QTimeZone zone(timeZoneId_);
+    if (!zone.isValid()) zone = QTimeZone::systemTimeZone();
+    if (ms <= 0) return QDateTime::currentDateTime();
+    return QDateTime::fromMSecsSinceEpoch(ms, zone);
+  }
+
   void wireClient() {
     connect(&client_, &CandleClient::candlesLoaded, this, [this](const QVector<Candle> &candles) {
       loaded_ = candles;
@@ -559,7 +674,7 @@ private:
   QTimer replayTimer_;
 
   bool dark_ = true;
-  QString symbol_ = "XAUUSD";
+  QString symbol_ = "BTCUSD";
   QString timeframe_ = "15M";
   QString strategyName_ = "n_in_range_variant";
   QByteArray timeZoneId_ = QTimeZone::systemTimeZoneId();
@@ -582,4 +697,11 @@ private:
 
   bool magnetEnabled_ = false;
   int annotationTool_ = 0;
+
+  QNetworkAccessManager net_;
+  bool updateChecking_ = false;
+  bool updateAvailable_ = false;
+  QString updateStatus_ = "尚未检查";
+  QString latestVersion_;
+  QString downloadUrl_;
 };

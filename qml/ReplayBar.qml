@@ -34,15 +34,41 @@ Rectangle {
 
         Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 22; color: theme.borderSubtle }
 
-        Image {
-            width: 15; height: 15
-            sourceSize.width: 15; sourceSize.height: 15
-            source: theme.icon("calendar", "muted", 15)
-        }
-        Text {
-            text: controller.replayCursorText
-            color: theme.textPrimary
-            font.pixelSize: 12
+        Rectangle {
+            Layout.preferredWidth: 184
+            Layout.preferredHeight: 28
+            radius: 6
+            color: theme.bgPanel2
+            border.color: cursorField.activeFocus ? theme.borderStrong : theme.borderSubtle
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 10
+                anchors.rightMargin: 8
+                spacing: 8
+                Image {
+                    width: 15; height: 15
+                    sourceSize.width: 15; sourceSize.height: 15
+                    source: theme.icon("calendar", "muted", 15)
+                }
+                TextField {
+                    id: cursorField
+                    Layout.fillWidth: true
+                    font.pixelSize: 12
+                    color: theme.textPrimary
+                    background: null
+                    verticalAlignment: Text.AlignVCenter
+                    inputMask: "9999-99-99 99:99;_"
+                    onEditingFinished: controller.setReplayCursorText(text)
+                    Keys.onReturnPressed: controller.setReplayCursorText(text)
+                    Component.onCompleted: text = controller.replayCursorText
+                    Connections {
+                        target: controller
+                        function onReplayChanged() {
+                            if (!cursorField.activeFocus) cursorField.text = controller.replayCursorText
+                        }
+                    }
+                }
+            }
         }
 
         Slider {
@@ -73,9 +99,9 @@ Rectangle {
             }
         }
 
-        ComboBox {
+        ComboField {
             id: speedBox
-            implicitWidth: 80
+            implicitWidth: 84
             model: ["1", "2", "5", "10", "20", "50"]
             currentIndex: 3
             onActivated: controller.replaySpeed = parseInt(currentText)

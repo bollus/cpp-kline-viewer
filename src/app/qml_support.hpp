@@ -110,7 +110,7 @@ public:
   QString textMuted() const { return dark_ ? Theme::textMuted() : Theme::lTextMuted(); }
   QString brandBlue() const { return dark_ ? Theme::brandBlue() : Theme::lBrandBlue(); }
   QString brandBlueHover() const { return Theme::brandBlueHover(); }
-  QString brandBlueSoft() const { return Theme::brandBlueSoft(); }
+  QString brandBlueSoft() const { return dark_ ? Theme::brandBlueSoft() : Theme::lBrandBlueSoft(); }
   QString green() const { return Theme::green(); }
   QString red() const { return Theme::red(); }
   QString orange() const { return Theme::orange(); }
@@ -122,6 +122,7 @@ public:
     QString hex;
     if (role == "primary") hex = textPrimary();
     else if (role == "brand") hex = brandBlue();
+    else if (role == "onAccent") hex = QStringLiteral("#FFFFFF");
     else if (role == "muted") hex = textMuted();
     else if (role == "green") hex = green();
     else if (role == "red") hex = red();

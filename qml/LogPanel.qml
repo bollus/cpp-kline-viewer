@@ -46,7 +46,7 @@ Rectangle {
 
                 Item { Layout.fillWidth: true }
 
-                ComboBox {
+                ComboField {
                     implicitWidth: 96
                     implicitHeight: 26
                     model: ["全部", "INFO", "WARN", "ERROR", "DEBUG"]
@@ -89,6 +89,12 @@ Rectangle {
             clip: true
             model: controller.logModel
             ScrollBar.vertical: ScrollBar {}
+
+            // Auto-follow the tail unless the user has scrolled up to inspect.
+            property bool followTail: true
+            onMovementEnded: followTail = atYEnd
+            onCountChanged: if (followTail) Qt.callLater(positionViewAtEnd)
+            Component.onCompleted: positionViewAtEnd()
             delegate: Rectangle {
                 width: logList.width
                 height: 22

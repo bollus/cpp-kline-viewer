@@ -150,13 +150,17 @@ Rectangle {
                     }
                 }
 
-                CheckBox {
+                CheckField {
                     id: realtimeCheck
                     text: "启用实时推送"
-                    checked: controller.realtimeEnabled
-                    contentItem: Text {
-                        text: parent.text; color: theme.textPrimary; font.pixelSize: 12
-                        leftPadding: parent.indicator.width + 6; verticalAlignment: Text.AlignVCenter
+                    // Initialise once (no binding) so the user can freely toggle;
+                    // re-sync from the controller only after a save round-trip.
+                    Component.onCompleted: checked = controller.realtimeEnabled
+                    Connections {
+                        target: controller
+                        function onBackendChanged() {
+                            if (!realtimeCheck.activeFocus) realtimeCheck.checked = controller.realtimeEnabled
+                        }
                     }
                 }
 

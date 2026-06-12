@@ -57,6 +57,9 @@ qt_add_qml_module(q4j_kline_viewer
     qml/RightSidebar.qml
     qml/LogPanel.qml
     qml/IconButton.qml
+    qml/ComboField.qml
+    qml/CheckField.qml
+    qml/IndicatorDialog.qml
 )
 
 # The generated QML type registration includes headers by basename

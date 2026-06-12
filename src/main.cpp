@@ -10,6 +10,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QQuickWindow>
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -39,10 +40,13 @@ int main(int argc, char **argv) {
   const QString appFontFamily = bundledFontFamily.isEmpty() ? systemUiFontFamily() : bundledFontFamily;
   QFont appFont(appFontFamily);
   appFont.setPointSize(10);
-  appFont.setWeight(QFont::Normal);
+  // Medium weight + native text rendering keeps glyphs crisp on Windows, where
+  // the distance-field default looked thin/blurry.
+  appFont.setWeight(QFont::Medium);
   appFont.setStyleStrategy(static_cast<QFont::StyleStrategy>(QFont::PreferAntialias | QFont::PreferQuality));
   app.setFont(appFont);
 
+  QQuickWindow::setTextRenderType(QQuickWindow::NativeRendering);
   QQuickStyle::setStyle("Basic");
 
   ThemeProvider theme;
