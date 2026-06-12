@@ -59,6 +59,10 @@ class AppController : public QObject {
   Q_PROPERTY(int eventCount READ eventCount NOTIFY eventCountChanged)
   Q_PROPERTY(QString visibleRangeText READ visibleRangeText NOTIFY visibleRangeChanged)
   Q_PROPERTY(QString dataStartText READ dataStartText NOTIFY replayChanged)
+  Q_PROPERTY(QStringList timeZoneOptions READ timeZoneOptions CONSTANT)
+  Q_PROPERTY(QString timeZoneId READ timeZoneId WRITE setTimeZoneId NOTIFY timeZoneChanged)
+  Q_PROPERTY(QString timeZoneLabel READ timeZoneLabel NOTIFY timeZoneChanged)
+  Q_PROPERTY(int timeZoneIndex READ timeZoneIndex NOTIFY timeZoneChanged)
 
   Q_PROPERTY(bool replayActive READ replayActive WRITE setReplayActive NOTIFY replayChanged)
   Q_PROPERTY(bool replayPlaying READ replayPlaying NOTIFY replayChanged)
@@ -117,12 +121,11 @@ public:
       connect(chart_, &ChartItem::overlayRangeChanged, &client_, &CandleClient::loadOverlayRange);
       connect(chart_, &ChartItem::visibleRangeChanged, this,
               [this](qint64 startMs, qint64 endMs, int firstIndex, int lastIndex) {
-                if (startMs <= 0 || endMs <= 0 || firstIndex < 0 || lastIndex < 0) {
-                  visibleRangeText_ = "可视范围 --";
-                } else {
-                  visibleRangeText_ = QString("可视范围 %1 → %2")
-                      .arg(formatTime(startMs, "MM-dd HH:mm"), formatTime(endMs, "MM-dd HH:mm"));
-                }
+                visibleStartMs_ = startMs;
+                visibleEndMs_ = endMs;
+                visibleFirstIndex_ = firstIndex;
+                visibleLastIndex_ = lastIndex;
+                updateVisibleRangeText();
                 emit visibleRangeChanged();
               });
       // Only user-driven pan/zoom drives cross-view sync (programmatic loads do
@@ -210,6 +213,25 @@ public:
   int eventCount() const { return eventCount_; }
   QString visibleRangeText() const { return visibleRangeText_; }
   QString dataStartText() const { return dataStartText_; }
+  QStringList timeZoneOptions() const { return supportedTimeZones(); }
+  QString timeZoneId() const { return QString::fromUtf8(timeZoneId_); }
+  QString timeZoneLabel() const { return QString::fromUtf8(timeZoneId_); }
+  int timeZoneIndex() const {
+    const int index = supportedTimeZones().indexOf(QString::fromUtf8(timeZoneId_));
+    return index >= 0 ? index : 0;
+  }
+  void setTimeZoneId(const QString &id) {
+    const QByteArray resolved = resolveTimeZoneId(id);
+    if (timeZoneId_ == resolved) return;
+    timeZoneId_ = resolved;
+    if (chart_) chart_->setTimeZoneId(timeZoneId_);
+    saveDisplaySettings();
+    updateVisibleRangeText();
+    if (!loaded_.isEmpty()) dataStartText_ = "数据起点：" + formatTime(loaded_.first().ms, "yyyy-MM-dd HH:mm");
+    emit timeZoneChanged();
+    emit visibleRangeChanged();
+    emit replayChanged();
+  }
 
   bool replayActive() const { return replayActive_; }
   bool replayPlaying() const { return replayTimer_.isActive(); }
@@ -484,6 +506,7 @@ signals:
   void ohlcChanged();
   void eventCountChanged();
   void visibleRangeChanged();
+  void timeZoneChanged();
   void replayChanged();
   void magnetChanged();
   void annotationToolChanged();
@@ -502,6 +525,40 @@ private:
     if (!zone.isValid()) zone = QTimeZone::systemTimeZone();
     if (ms <= 0) return QDateTime::currentDateTime();
     return QDateTime::fromMSecsSinceEpoch(ms, zone);
+  }
+
+public:
+  static QStringList supportedTimeZones() {
+    QStringList zones{
+      "UTC",
+      "Asia/Shanghai",
+      "Asia/Tokyo",
+      "Europe/London",
+      "Europe/Berlin",
+      "America/New_York",
+      "America/Chicago",
+      "America/Los_Angeles"
+    };
+    const QString system = QString::fromUtf8(QTimeZone::systemTimeZoneId());
+    if (!zones.contains(system)) zones.prepend(system);
+    zones.removeDuplicates();
+    return zones;
+  }
+
+  static QByteArray resolveTimeZoneId(const QString &id) {
+    const QByteArray candidate = id.trimmed().toUtf8();
+    if (QTimeZone(candidate).isValid()) return candidate;
+    return QTimeZone::systemTimeZoneId();
+  }
+
+private:
+  void updateVisibleRangeText() {
+    if (visibleStartMs_ <= 0 || visibleEndMs_ <= 0 || visibleFirstIndex_ < 0 || visibleLastIndex_ < 0) {
+      visibleRangeText_ = "可视范围 --";
+      return;
+    }
+    visibleRangeText_ = QString("可视范围 %1 → %2")
+        .arg(formatTime(visibleStartMs_, "MM-dd HH:mm"), formatTime(visibleEndMs_, "MM-dd HH:mm"));
   }
 
   void wireClient() {
@@ -712,9 +769,13 @@ private:
 
   void loadDisplaySettings() {
     QSettings settings("Q4J", "KLineViewer");
-    timeZoneId_ = settings.value("display/timeZone", QTimeZone::systemTimeZoneId()).toByteArray();
-    if (!QTimeZone(timeZoneId_).isValid()) timeZoneId_ = QTimeZone::systemTimeZoneId();
+    timeZoneId_ = resolveTimeZoneId(settings.value("display/timeZone", QTimeZone::systemTimeZoneId()).toString());
     if (chart_) chart_->setTimeZoneId(timeZoneId_);
+  }
+
+  void saveDisplaySettings() const {
+    QSettings settings("Q4J", "KLineViewer");
+    settings.setValue("display/timeZone", QString::fromUtf8(timeZoneId_));
   }
 
   QString timeframeLabel(const QString &token) const {
@@ -750,6 +811,10 @@ private:
   int eventCount_ = 0;
   QString visibleRangeText_ = "可视范围 --";
   QString dataStartText_ = "数据起点：--";
+  qint64 visibleStartMs_ = 0;
+  qint64 visibleEndMs_ = 0;
+  int visibleFirstIndex_ = -1;
+  int visibleLastIndex_ = -1;
 
   bool replayActive_ = false;
   int replaySpeed_ = 10;

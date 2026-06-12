@@ -50,6 +50,10 @@ class Workspace : public QObject {
   Q_PROPERTY(int eventCount READ eventCount NOTIFY eventCountChanged)
   Q_PROPERTY(QString visibleRangeText READ visibleRangeText NOTIFY visibleRangeChanged)
   Q_PROPERTY(QString dataStartText READ dataStartText NOTIFY replayChanged)
+  Q_PROPERTY(QStringList timeZoneOptions READ timeZoneOptions CONSTANT)
+  Q_PROPERTY(QString timeZoneId READ timeZoneId WRITE setTimeZoneId NOTIFY timeZoneChanged)
+  Q_PROPERTY(QString timeZoneLabel READ timeZoneLabel NOTIFY timeZoneChanged)
+  Q_PROPERTY(int timeZoneIndex READ timeZoneIndex NOTIFY timeZoneChanged)
 
   Q_PROPERTY(bool replayActive READ replayActive WRITE setReplayActive NOTIFY replayChanged)
   Q_PROPERTY(bool replayPlaying READ replayPlaying NOTIFY replayChanged)
@@ -121,6 +125,23 @@ public:
   int eventCount() const { return active_ ? active_->eventCount() : 0; }
   QString visibleRangeText() const { return active_ ? active_->visibleRangeText() : QStringLiteral("可视范围 --"); }
   QString dataStartText() const { return active_ ? active_->dataStartText() : QStringLiteral("数据起点：--"); }
+  QStringList timeZoneOptions() const { return AppController::supportedTimeZones(); }
+  QString timeZoneId() const { return QString::fromUtf8(timeZoneId_); }
+  QString timeZoneLabel() const { return QString::fromUtf8(timeZoneId_); }
+  int timeZoneIndex() const {
+    const int index = timeZoneOptions().indexOf(QString::fromUtf8(timeZoneId_));
+    return index >= 0 ? index : 0;
+  }
+  void setTimeZoneId(const QString &id) {
+    const QByteArray resolved = AppController::resolveTimeZoneId(id);
+    if (timeZoneId_ == resolved) return;
+    timeZoneId_ = resolved;
+    saveDisplaySettings();
+    for (AppController *vc : views_) vc->setTimeZoneId(QString::fromUtf8(timeZoneId_));
+    emit timeZoneChanged();
+    emit visibleRangeChanged();
+    emit replayChanged();
+  }
 
   bool replayActive() const { return active_ ? active_->replayActive() : false; }
   void setReplayActive(bool a) { if (active_) active_->setReplayActive(a); }
@@ -273,6 +294,7 @@ signals:
   void eventCountChanged();
   void visibleRangeChanged();
   void replayChanged();
+  void timeZoneChanged();
   void magnetChanged();
   void annotationToolChanged();
   void updateChanged();
@@ -289,6 +311,7 @@ private:
   void configureView(AppController *vc, int slot) {
     vc->setDark(dark_);
     vc->setSymbol(symbol_);
+    vc->setTimeZoneId(QString::fromUtf8(timeZoneId_));
     vc->setTimeframeQuiet(timeframeForSlot(slot));
     if (!http_.isEmpty()) vc->configureBackendSilent(http_, ws_, realtime_);
     else vc->refresh();
@@ -320,6 +343,7 @@ private:
     activeConns_ << connect(active_, &AppController::eventCountChanged, this, &Workspace::eventCountChanged);
     activeConns_ << connect(active_, &AppController::visibleRangeChanged, this, &Workspace::visibleRangeChanged);
     activeConns_ << connect(active_, &AppController::replayChanged, this, &Workspace::replayChanged);
+    activeConns_ << connect(active_, &AppController::timeZoneChanged, this, &Workspace::timeZoneChanged);
     activeConns_ << connect(active_, &AppController::magnetChanged, this, &Workspace::magnetChanged);
     activeConns_ << connect(active_, &AppController::annotationToolChanged, this, &Workspace::annotationToolChanged);
     activeConns_ << connect(active_, &AppController::updateChanged, this, &Workspace::updateChanged);
@@ -339,6 +363,7 @@ private:
     emit eventCountChanged();
     emit visibleRangeChanged();
     emit replayChanged();
+    emit timeZoneChanged();
     emit magnetChanged();
     emit annotationToolChanged();
     emit updateChanged();
@@ -374,8 +399,10 @@ private:
     ws_ = s.value("backend/ws").toString().trimmed();
     realtime_ = s.value("backend/realtime", true).toBool();
     symbol_ = s.value("symbol", symbol_).toString();
+    timeZoneId_ = AppController::resolveTimeZoneId(s.value("display/timeZone", QTimeZone::systemTimeZoneId()).toString());
     emit backendChanged();
     emit symbolChanged();
+    emit timeZoneChanged();
   }
   void saveBackendSettings() const {
     QSettings s("Q4J", "KLineViewer");
@@ -386,6 +413,10 @@ private:
   void saveSymbol() const {
     QSettings s("Q4J", "KLineViewer");
     s.setValue("symbol", symbol_);
+  }
+  void saveDisplaySettings() const {
+    QSettings s("Q4J", "KLineViewer");
+    s.setValue("display/timeZone", QString::fromUtf8(timeZoneId_));
   }
 
   LogModel *logModel_ = nullptr;
@@ -402,6 +433,7 @@ private:
 
   bool dark_ = true;
   QString symbol_ = "XAUUSD";
+  QByteArray timeZoneId_ = QTimeZone::systemTimeZoneId();
   QString http_;
   QString ws_;
   bool realtime_ = true;

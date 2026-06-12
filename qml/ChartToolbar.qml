@@ -87,6 +87,17 @@ Rectangle {
 
         Item { Layout.fillWidth: true }
 
+        ComboField {
+            id: timeZoneBox
+            implicitWidth: 132
+            model: controller.timeZoneOptions
+            currentIndex: controller.timeZoneIndex
+            displayText: controller.timeZoneLabel
+            ToolTip.visible: hovered
+            ToolTip.text: "X轴时间时区"
+            onActivated: controller.timeZoneId = currentText
+        }
+
         Button {
             text: controller.replayActive ? "退出回放" : "K线回放"
             flat: true
