@@ -3705,6 +3705,8 @@ plotshape(marks, {
     )";
   }
 
+  struct LogEntry { QString time; QString level; QString module; QString message; };
+
   QString classifyLogLevel(const QString &message) const {
     const QString lower = message.toLower();
     if (message.contains("ERROR") || lower.contains("error") || message.contains("失败") || message.contains("错误")) return "ERROR";
@@ -4335,7 +4337,6 @@ plotshape(marks, {
   QLabel *statWarn_ = nullptr;
   QLabel *statError_ = nullptr;
   QLabel *statDebug_ = nullptr;
-  struct LogEntry { QString time; QString level; QString module; QString message; };
   QVector<LogEntry> logEntries_;
   QTableWidget *logTable_ = nullptr;
   int logInfo_ = 0;
