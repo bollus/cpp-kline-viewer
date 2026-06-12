@@ -55,6 +55,10 @@ qt_add_qml_module(q4j_kline_viewer
     qml/IconButton.qml
 )
 
+# The generated QML type registration includes headers by basename
+# (e.g. <chart_item.hpp>), so the app source dir must be on the include path.
+target_include_directories(q4j_kline_viewer PRIVATE src/app)
+
 if(WIN32)
   target_sources(q4j_kline_viewer PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/app.rc)
 endif()
