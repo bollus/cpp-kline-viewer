@@ -548,7 +548,7 @@ private:
   QColor down() const { return Theme::cRed(); }
 
   QFont uiFont(int pixelSize, QFont::Weight weight = QFont::Normal) const {
-    QFont f = font();
+    QFont f = QGuiApplication::font();
     f.setPixelSize(pixelSize);
     f.setWeight(weight);
     f.setStyleStrategy(static_cast<QFont::StyleStrategy>(QFont::PreferAntialias | QFont::PreferQuality));
@@ -1595,7 +1595,7 @@ private:
     syncingStyleToolbar_ = false;
     const int w = positionBlock ? 178 : 118;
     annotationStyleToolbar_->setFixedSize(w, 34);
-    annotationStyleToolbar_->move(std::max(54, (width() - w) / 2), 18);
+    annotationStyleToolbar_->move(std::max(54, static_cast<int>((width() - w) / 2)), 18);
     annotationStyleToolbar_->raise();
   }
 
