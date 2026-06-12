@@ -9,6 +9,10 @@ set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets Svg Qml Quick QuickControls2)
 
+# Ensure qt_add_qml_module places the module under the default import path
+# (qrc:/qt/qml/...) so its QML-file types are discoverable at runtime.
+qt_policy(SET QTP0001 NEW)
+
 set(Q4J_UPDATE_REPO "" CACHE STRING "GitHub repository used by the in-app updater, for example owner/repo")
 set(Q4J_APP_VERSION "${PROJECT_VERSION}" CACHE STRING "Application version shown in the app and embedded in packages")
 string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" Q4J_APP_VERSION_MATCH "${Q4J_APP_VERSION}")

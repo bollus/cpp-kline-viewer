@@ -50,6 +50,9 @@ int main(int argc, char **argv) {
   controller.setDark(theme.dark());
 
   QQmlApplicationEngine engine;
+  // Cover both module resource layouts (qrc:/qt/qml/... and qrc:/...).
+  engine.addImportPath(QStringLiteral("qrc:/qt/qml"));
+  engine.addImportPath(QStringLiteral("qrc:/"));
   engine.addImageProvider(QStringLiteral("icon"), new IconImageProvider);
   engine.rootContext()->setContextProperty("controller", &controller);
   engine.rootContext()->setContextProperty("theme", &theme);
