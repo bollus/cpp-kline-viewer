@@ -269,8 +269,45 @@ public:
     update();
   }
 
+  // ---- Multi-view synchronisation -----------------------------------------
+  // Align this pane's viewport to a wall-clock [startMs, endMs] window coming
+  // from a sibling pane. Index space differs per timeframe, so we resolve the
+  // matching candle indices locally. We intentionally do NOT emit
+  // visibleRangeChanged here to avoid sync feedback loops.
+  void setVisibleRangeByTime(qint64 startMs, qint64 endMs) {
+    if (candles_.isEmpty() || endMs <= startMs) return;
+    const int startIdx = indexAtTime(startMs);
+    const int endIdx = indexAtTime(endMs);
+    int count = endIdx - startIdx + 1;
+    if (count < 20) count = 20;
+    visibleCount_ = std::clamp(count, 20, std::max(40, candleCount() + rightOffsetBars_));
+    visibleStart_ = std::clamp(static_cast<double>(startIdx), 0.0, maxVisibleStart());
+    update();
+  }
+
+  // Draw a synchronised vertical crosshair at a sibling pane's hovered time.
+  void setSyncCrosshairTime(qint64 ms, bool active) {
+    syncCrosshairMs_ = ms;
+    syncCrosshairActive_ = active;
+    update();
+  }
+
+  qint64 visibleStartMs() const {
+    if (candles_.isEmpty()) return 0;
+    const int start = std::clamp(static_cast<int>(std::floor(visibleStart_)), 0, candleCount() - 1);
+    return candles_[start].ms;
+  }
+  qint64 visibleEndMs() const {
+    if (candles_.isEmpty()) return 0;
+    const int end = std::clamp(visibleEnd() - 1, 0, candleCount() - 1);
+    return candles_[end].ms;
+  }
+
 signals:
   void hoveredCandleChanged(const Candle *candle);
+  void crosshairMoved(qint64 timeMs, bool active);
+  void viewportInteracted(qint64 startMs, qint64 endMs);
+  void chartPressed();
   void olderCandlesRequested(qint64 beforeMs);
   void overlayRangeChanged(qint64 startMs, qint64 endMs);
   void visibleRangeChanged(qint64 startMs, qint64 endMs, int firstIndex, int lastIndex);
@@ -344,6 +381,7 @@ protected:
       requestMoreIfNeeded();
       emitOverlayRange();
       emitVisibleRange();
+      emit viewportInteracted(visibleStartMs(), visibleEndMs());
       scheduleRepaint();
       return;
     }
@@ -355,6 +393,7 @@ protected:
       visibleStart_ = std::clamp(axisAnchorIndex_ - newLocalIndex, 0.0, maxVisibleStart());
       emitOverlayRange();
       emitVisibleRange();
+      emit viewportInteracted(visibleStartMs(), visibleEndMs());
       scheduleRepaint();
       return;
     }
@@ -369,8 +408,10 @@ protected:
     hoveredLineLayerId_ = lineLayerAt(posF);
     if (hoveredIndex_ >= 0 && hoveredIndex_ < candleCount()) {
       emit hoveredCandleChanged(&candles_[hoveredIndex_]);
+      emit crosshairMoved(candles_[hoveredIndex_].ms, true);
     } else {
       emit hoveredCandleChanged(nullptr);
+      emit crosshairMoved(0, false);
     }
     update();
   }
@@ -381,6 +422,7 @@ protected:
     hoveredLineLayerId_.clear();
     hasMouse_ = false;
     emit hoveredCandleChanged(nullptr);
+    emit crosshairMoved(0, false);
     update();
   }
 
@@ -391,6 +433,7 @@ protected:
 
   void mousePressEvent(QMouseEvent *event) override {
     forceActiveFocus();
+    emit chartPressed();
     if (annotationTool_ != AnnotationTool::None && event->button() == Qt::RightButton) {
       if (annotationTool_ == AnnotationTool::Polyline && drawingAnnotation_) finishPolyline();
       else if (!showPositionContextMenu(event->position(), event->globalPosition().toPoint())) showAnnotationContextMenu(event->position(), event->globalPosition().toPoint());
@@ -490,6 +533,7 @@ protected:
     requestMoreIfNeeded();
     emitOverlayRange();
     emitVisibleRange();
+    emit viewportInteracted(visibleStartMs(), visibleEndMs());
     scheduleRepaint();
   }
 
@@ -2715,18 +2759,34 @@ private:
   }
 
   void paintCrosshair(QPainter &p) {
-    if (hoveredIndex_ < 0 || hoveredIndex_ >= candleCount()) return;
-    double minPrice, maxPrice;
-    visibleRange(minPrice, maxPrice);
+    if (candles_.isEmpty()) return;
     const QRectF r = plotRect();
-    const double x = r.left() + (hoveredIndex_ - visibleStart_ + 0.5) * barStep();
-    p.setPen(QPen(dark_ ? QColor(223, 208, 184, 95) : QColor(71, 85, 105, 95), 1, Qt::DashLine));
-    p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
-    if (hasMouse_ && r.contains(mousePos_)) {
-      p.drawLine(QPointF(r.left(), mousePos_.y()), QPointF(r.right(), mousePos_.y()));
-      drawAxisTag(p, QRectF(r.right() + 6, mousePos_.y() - 9, 66, 18), QString::number(priceForY(mousePos_.y(), minPrice, maxPrice), 'f', 2), QColor("#DFD0B8"));
-      const QString time = formatChartTime(candles_[hoveredIndex_].ms, "MM-dd HH:mm");
-      drawAxisTag(p, QRectF(x - 48, r.bottom() + 6, 96, 18), time, QColor("#DFD0B8"));
+
+    // Local crosshair takes precedence whenever the mouse is over this pane.
+    if (hoveredIndex_ >= 0 && hoveredIndex_ < candleCount()) {
+      double minPrice, maxPrice;
+      visibleRange(minPrice, maxPrice);
+      const double x = r.left() + (hoveredIndex_ - visibleStart_ + 0.5) * barStep();
+      p.setPen(QPen(dark_ ? QColor(223, 208, 184, 95) : QColor(71, 85, 105, 95), 1, Qt::DashLine));
+      p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+      if (hasMouse_ && r.contains(mousePos_)) {
+        p.drawLine(QPointF(r.left(), mousePos_.y()), QPointF(r.right(), mousePos_.y()));
+        drawAxisTag(p, QRectF(r.right() + 6, mousePos_.y() - 9, 66, 18), QString::number(priceForY(mousePos_.y(), minPrice, maxPrice), 'f', 2), QColor("#DFD0B8"));
+        const QString time = formatChartTime(candles_[hoveredIndex_].ms, "MM-dd HH:mm");
+        drawAxisTag(p, QRectF(x - 48, r.bottom() + 6, 96, 18), time, QColor("#DFD0B8"));
+      }
+      return;
+    }
+
+    // Otherwise mirror a sibling pane's crosshair (vertical line only; price
+    // axes differ across timeframes so no horizontal line/tag is drawn).
+    if (syncCrosshairActive_) {
+      const int idx = indexAtTime(syncCrosshairMs_);
+      const double x = r.left() + (idx - visibleStart_ + 0.5) * barStep();
+      if (x >= r.left() && x <= r.right()) {
+        p.setPen(QPen(dark_ ? QColor(223, 208, 184, 70) : QColor(71, 85, 105, 70), 1, Qt::DashLine));
+        p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+      }
     }
   }
 
@@ -2929,6 +2989,8 @@ private:
   QString hoveredLineLayerId_;
   QSet<QString> selectedLineLayerIds_;
   bool hasMouse_ = false;
+  qint64 syncCrosshairMs_ = 0;
+  bool syncCrosshairActive_ = false;
   QPointF mousePos_;
   bool dragging_ = false;
   bool xAxisScaling_ = false;

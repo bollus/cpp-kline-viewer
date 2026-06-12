@@ -60,6 +60,9 @@ qt_add_qml_module(q4j_kline_viewer
     qml/ComboField.qml
     qml/CheckField.qml
     qml/IndicatorDialog.qml
+    qml/ChartPane.qml
+    qml/ChartGrid.qml
+    qml/LayoutMenu.qml
 )
 
 # The generated QML type registration includes headers by basename

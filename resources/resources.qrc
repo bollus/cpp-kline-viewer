@@ -43,5 +43,6 @@
     <file alias="calendar.svg">icons/calendar.svg</file>
     <file alias="search.svg">icons/search.svg</file>
     <file alias="check.svg">icons/check.svg</file>
+    <file alias="layout.svg">icons/layout.svg</file>
   </qresource>
 </RCC>

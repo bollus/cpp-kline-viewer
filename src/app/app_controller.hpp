@@ -16,6 +16,8 @@
 #include <QRegularExpression>
 #include <algorithm>
 
+#include <QtQml/qqmlregistration.h>
+
 #include "candle_client.hpp"
 #include "chart_item.hpp"
 #include "models.hpp"
@@ -34,9 +36,10 @@
 // invokables and signals.
 class AppController : public QObject {
   Q_OBJECT
+  QML_ELEMENT
   Q_PROPERTY(ChartItem *chart READ chart WRITE setChart NOTIFY chartChanged)
-  Q_PROPERTY(LogModel *logModel READ logModel CONSTANT)
-  Q_PROPERTY(StrategyModel *strategyModel READ strategyModel CONSTANT)
+  Q_PROPERTY(LogModel *logModel READ logModel NOTIFY modelsChanged)
+  Q_PROPERTY(StrategyModel *strategyModel READ strategyModel NOTIFY modelsChanged)
 
   Q_PROPERTY(bool dark READ dark WRITE setDark NOTIFY darkChanged)
   Q_PROPERTY(QString symbol READ symbol WRITE setSymbol NOTIFY symbolChanged)
@@ -125,6 +128,15 @@ public:
                 }
                 emit visibleRangeChanged();
               });
+      // Only user-driven pan/zoom drives cross-view sync (programmatic loads do
+      // not, so a freshly loaded pane never resets its siblings).
+      connect(chart_, &ChartItem::viewportInteracted, this, [this](qint64 startMs, qint64 endMs) {
+        emit viewportChanged(startMs, endMs);
+      });
+      connect(chart_, &ChartItem::crosshairMoved, this, [this](qint64 ms, bool active) {
+        emit crosshairChanged(ms, active);
+      });
+      connect(chart_, &ChartItem::chartPressed, this, [this]() { emit activated(); });
       connect(chart_, &ChartItem::hoveredCandleChanged, this, [this](const Candle *c) {
         if (!c) {
           ohlcText_.clear();
@@ -144,6 +156,20 @@ public:
 
   LogModel *logModel() const { return logModel_; }
   StrategyModel *strategyModel() const { return strategyModel_; }
+
+  // Replace the per-view models with workspace-shared instances so every pane
+  // feeds one log panel / strategy list. Must be called before start/begin.
+  void setSharedModels(LogModel *log, StrategyModel *strategy) {
+    if (log && log != logModel_) {
+      if (logModel_ && logModel_->parent() == this) logModel_->deleteLater();
+      logModel_ = log;
+    }
+    if (strategy && strategy != strategyModel_) {
+      if (strategyModel_ && strategyModel_->parent() == this) strategyModel_->deleteLater();
+      strategyModel_ = strategy;
+    }
+    emit modelsChanged();
+  }
 
   // ---- Simple state accessors ---------------------------------------------
   bool dark() const { return dark_; }
@@ -235,6 +261,14 @@ public:
     QTimer::singleShot(0, this, &AppController::refresh);
   }
 
+  // Set timeframe without triggering a reload (the workspace configures the
+  // backend afterwards which performs the single refresh).
+  Q_INVOKABLE void setTimeframeQuiet(const QString &token) {
+    if (timeframe_ == token) return;
+    timeframe_ = token;
+    emit timeframeChanged();
+  }
+
   Q_INVOKABLE void refresh() {
     if (!client_.hasConfiguredBackend()) {
       emit needsBackendConfig();
@@ -275,6 +309,30 @@ public:
     client_.loadOverlayStrategies();
     refresh();
   }
+
+  // Configure this pane's client without persisting or reloading the strategy
+  // list (the workspace handles persistence + a single strategy fetch).
+  Q_INVOKABLE void configureBackendSilent(const QString &http, const QString &ws, bool realtime) {
+    const QString trimmed = http.trimmed();
+    if (trimmed.isEmpty()) return;
+    client_.configureBackend(trimmed, ws.trimmed(), realtime);
+    emit backendChanged();
+    refresh();
+  }
+
+  Q_INVOKABLE void loadOverlayStrategiesOnce() {
+    if (client_.hasConfiguredBackend()) client_.loadOverlayStrategies();
+  }
+
+  // ---- Cross-view synchronisation (driven by Workspace) --------------------
+  Q_INVOKABLE void applySyncedRange(qint64 startMs, qint64 endMs) {
+    if (chart_) chart_->setVisibleRangeByTime(startMs, endMs);
+  }
+  Q_INVOKABLE void applySyncedCrosshair(qint64 ms, bool active) {
+    if (chart_) chart_->setSyncCrosshairTime(ms, active);
+  }
+  qint64 viewportStartMs() const { return chart_ ? chart_->visibleStartMs() : 0; }
+  qint64 viewportEndMs() const { return chart_ ? chart_->visibleEndMs() : 0; }
 
   // ---- Replay --------------------------------------------------------------
   void setReplayActive(bool active) {
@@ -435,6 +493,11 @@ signals:
   void needsBackendConfig();
   void strategiesLoaded();
   void updateChanged();
+  void modelsChanged();
+  void viewportChanged(qint64 startMs, qint64 endMs);
+  void crosshairChanged(qint64 timeMs, bool active);
+  void dataLoaded();
+  void activated();
 
 private:
   QDateTime msToZoned(qint64 ms) const {
@@ -455,6 +518,7 @@ private:
       syncReplayBounds();
       applyReplayView();
       updateMarketSummary();
+      emit dataLoaded();
     });
     connect(&client_, &CandleClient::olderCandlesLoaded, this, [this](const QVector<Candle> &candles) {
       loaded_ += candles;

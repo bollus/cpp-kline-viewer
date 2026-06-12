@@ -30,6 +30,7 @@
 #include "app/qml_support.hpp"
 #include "app/models.hpp"
 #include "app/app_controller.hpp"
+#include "app/workspace.hpp"
 
 int main(int argc, char **argv) {
   // QApplication (not QGuiApplication) is retained so the chart's QMenu context
@@ -50,7 +51,7 @@ int main(int argc, char **argv) {
   QQuickStyle::setStyle("Basic");
 
   ThemeProvider theme;
-  AppController controller;
+  Workspace controller;
   controller.setDark(theme.dark());
 
   QQmlApplicationEngine engine;

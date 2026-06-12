@@ -15,6 +15,7 @@ Rectangle {
     signal requestMaximize()
     signal requestClose()
     signal openSettings()
+    signal openLayout()
 
     // Bottom divider to separate the bar from the chart area.
     Rectangle {
@@ -96,7 +97,8 @@ Rectangle {
                 Text {
                     text: controller.symbol
                     color: theme.textSecondary
-                    font.pixelSize: 12
+                    font.pixelSize: 16
+                    font.bold: true
                 }
 
                 // 空格或制表符
@@ -110,7 +112,6 @@ Rectangle {
                     text: controller.marketPrice
                     color: controller.marketUp ? theme.green : theme.red
                     font.pixelSize: 15
-                    font.bold: true
                 }
 
                 // 浮动变化
@@ -132,6 +133,7 @@ Rectangle {
             font.pixelSize: 12
         }
 
+        IconButton { id: layoutBtn; iconName: "layout"; tip: "视图布局"; onClicked: root.openLayout() }
         IconButton { iconName: "refresh"; tip: "刷新"; onClicked: controller.refresh() }
         IconButton { iconName: "bell"; tip: "通知" }
         IconButton {

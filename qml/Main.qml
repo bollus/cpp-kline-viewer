@@ -32,11 +32,13 @@ ApplicationWindow {
         spacing: 0
 
         TopBar {
+            id: topBar
             Layout.fillWidth: true
             onRequestMinimize: appWindow.showMinimized()
             onRequestMaximize: appWindow.toggleMaximize()
             onRequestClose: Qt.quit()
             onOpenSettings: settingsPopover.open()
+            onOpenLayout: layoutMenu.open()
         }
 
         RowLayout {
@@ -58,16 +60,9 @@ ApplicationWindow {
                     onOpenCustomIndicators: indicatorDialog.openAt(1)
                 }
 
-                Rectangle {
+                ChartGrid {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    color: theme.bgApp
-
-                    ChartItem {
-                        id: chart
-                        anchors.fill: parent
-                        Component.onCompleted: controller.chart = chart
-                    }
                 }
 
                 ReplayBar { Layout.fillWidth: true }
@@ -161,6 +156,13 @@ ApplicationWindow {
             Rectangle { Layout.fillWidth: true; height: 1; color: theme.borderSubtle }
             Text { text: "AlgoHub · 量化复盘终端"; color: theme.textMuted; font.pixelSize: 11 }
         }
+    }
+
+    // ---- Layout preset menu ----
+    LayoutMenu {
+        id: layoutMenu
+        x: appWindow.width - width - 12
+        y: 56
     }
 
     // ---- Indicator dialog ----
