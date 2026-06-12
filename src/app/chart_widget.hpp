@@ -254,6 +254,12 @@ public:
     update();
   }
 
+  void setReplayMarker(qint64 startMs, bool active) {
+    replayMarkerMs_ = startMs;
+    replayMarkerActive_ = active;
+    update();
+  }
+
 signals:
   void hoveredCandleChanged(const Candle *candle);
   void olderCandlesRequested(qint64 beforeMs);
@@ -293,6 +299,7 @@ protected:
     visibleRange(minPrice, maxPrice);
     paintGrid(p, minPrice, maxPrice);
     paintCandles(p);
+    paintReplayMarker(p);
     paintOverlays(p, minPrice, maxPrice);
     paintIndicators(p, minPrice, maxPrice);
     paintManualAnnotations(p, minPrice, maxPrice);
@@ -523,12 +530,12 @@ private:
     return maxVisibleStart() - visibleStart_ <= std::max(2.0, rightOffsetBars_ * 0.25);
   }
 
-  QColor bg() const { return dark_ ? QColor("#222831") : QColor("#f6f8fb"); }
-  QColor text() const { return dark_ ? QColor("#DFD0B8") : QColor("#172033"); }
-  QColor muted() const { return dark_ ? QColor("#948979") : QColor("#61708a"); }
-  QColor grid() const { return dark_ ? QColor(57, 62, 70, 175) : QColor(211, 218, 230, 190); }
-  QColor up() const { return QColor("#00D0BA"); }
-  QColor down() const { return QColor("#FF5C5C"); }
+  QColor bg() const { return dark_ ? Theme::cBgApp() : QColor("#f6f8fb"); }
+  QColor text() const { return dark_ ? Theme::cTextPrimary() : QColor("#172033"); }
+  QColor muted() const { return dark_ ? Theme::cTextSecondary() : QColor("#61708a"); }
+  QColor grid() const { return dark_ ? Theme::cGrid() : QColor(211, 218, 230, 190); }
+  QColor up() const { return Theme::cGreen(); }
+  QColor down() const { return Theme::cRed(); }
 
   QFont uiFont(int pixelSize, QFont::Weight weight = QFont::Normal) const {
     QFont f = font();
@@ -2401,6 +2408,29 @@ private:
     p.drawText(pos + QPointF(8, 4), label);
   }
 
+  void paintReplayMarker(QPainter &p) {
+    if (!replayMarkerActive_ || replayMarkerMs_ <= 0 || candles_.isEmpty()) return;
+    const QRectF r = plotRect();
+    const double idx = indexForTime(replayMarkerMs_);
+    const double x = r.left() + (idx - visibleStart_ + 0.5) * barStep();
+    if (x < r.left() - 2 || x > r.right() + 2) return;
+    p.save();
+    QPen pen(Theme::cBrandBlue(), 1.4, Qt::DashLine);
+    p.setPen(pen);
+    p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+    const QString label = QStringLiteral("回放起点");
+    p.setFont(uiFont(10, QFont::DemiBold));
+    const QFontMetrics fm(p.font());
+    const double w = fm.horizontalAdvance(label) + 12;
+    QRectF tag(x - w / 2, r.bottom() + 2, w, 16);
+    p.setPen(Qt::NoPen);
+    p.setBrush(Theme::cBrandBlue());
+    p.drawRoundedRect(tag, 3, 3);
+    p.setPen(QColor("#FFFFFF"));
+    p.drawText(tag, Qt::AlignCenter, label);
+    p.restore();
+  }
+
   void paintLatestPriceLine(QPainter &p, double minPrice, double maxPrice) {
     if (candles_.isEmpty()) return;
     const Candle &latest = candles_.last();
@@ -2936,6 +2966,8 @@ private:
   QVector<LineLayerHitbox> lineLayerHitboxes_;
   AnnotationTool annotationTool_ = AnnotationTool::None;
   bool magnetEnabled_ = true;
+  qint64 replayMarkerMs_ = 0;
+  bool replayMarkerActive_ = false;
   bool drawingAnnotation_ = false;
   AnnotationPoint draftStart_;
   AnnotationPoint draftPoint_;

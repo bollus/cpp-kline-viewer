@@ -31,6 +31,7 @@ qt_add_executable(q4j_kline_viewer
   WIN32
   MACOSX_BUNDLE
   src/main.cpp
+  src/app/theme.hpp
   src/app/core.hpp
   src/app/chart_widget.hpp
   src/app/candle_client.hpp

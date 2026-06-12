@@ -15,6 +15,8 @@
 #include <functional>
 #include <limits>
 
+#include "theme.hpp"
+
 struct Candle {
   qint64 ms = 0;
   double open = 0;
