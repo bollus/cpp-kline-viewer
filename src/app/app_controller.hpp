@@ -16,8 +16,6 @@
 #include <QRegularExpression>
 #include <algorithm>
 
-#include <QtQml/qqmlregistration.h>
-
 #include "candle_client.hpp"
 #include "chart_item.hpp"
 #include "models.hpp"
@@ -36,7 +34,6 @@
 // invokables and signals.
 class AppController : public QObject {
   Q_OBJECT
-  QML_ELEMENT
   Q_PROPERTY(ChartItem *chart READ chart WRITE setChart NOTIFY chartChanged)
   Q_PROPERTY(LogModel *logModel READ logModel NOTIFY modelsChanged)
   Q_PROPERTY(StrategyModel *strategyModel READ strategyModel NOTIFY modelsChanged)

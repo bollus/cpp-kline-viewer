@@ -16,8 +16,8 @@
 // pane. It also coordinates the multi-view layout and cross-pane crosshair /
 // viewport synchronisation.
 //
-// Each pane is a self-contained AppController (created in QML) that registers
-// itself here via registerView()/unregisterView().
+// Each pane owns a ChartItem (created in QML); the matching AppController is
+// created and owned here and bound to that chart via attachChart()/detachChart().
 class Workspace : public QObject {
   Q_OBJECT
 
@@ -151,29 +151,41 @@ public:
   }
 
   // ---- View registry (called from QML panes) ------------------------------
-  Q_INVOKABLE void registerView(int slot, QObject *controllerObj) {
-    AppController *vc = qobject_cast<AppController *>(controllerObj);
-    if (!vc || slot < 0) return;
-    views_.insert(slot, vc);
-    vc->setSharedModels(logModel_, strategyModel_);
+  //
+  // The AppController is *owned by C++* (created here, not instantiated in QML)
+  // so we never depend on AppController being a creatable QML type. The pane
+  // only creates its ChartItem and hands it over; we wire everything else up
+  // and return the controller so the pane can read its per-view properties.
+  Q_INVOKABLE QObject *attachChart(int slot, QObject *chartObj) {
+    if (slot < 0) return nullptr;
+    ChartItem *chart = qobject_cast<ChartItem *>(chartObj);
 
-    connect(vc, &AppController::viewportChanged, this,
-            [this, vc](qint64 s, qint64 e) { onPanned(vc, s, e); });
-    connect(vc, &AppController::crosshairChanged, this,
-            [this, vc](qint64 ms, bool a) { onCrosshair(vc, ms, a); });
-    connect(vc, &AppController::dataLoaded, this, [this, vc] { onViewLoaded(vc); });
-    connect(vc, &AppController::activated, this, [this, vc] { activateController(vc); });
-    connect(vc, &AppController::timeframeChanged, this, [this, slot, vc] {
-      if (slot >= 0 && slot < paneTimeframes_.size()) paneTimeframes_[slot] = vc->timeframe();
-    });
+    AppController *vc = views_.value(slot, nullptr);
+    if (!vc) {
+      vc = new AppController(this);
+      views_.insert(slot, vc);
+      vc->setSharedModels(logModel_, strategyModel_);
 
+      connect(vc, &AppController::viewportChanged, this,
+              [this, vc](qint64 s, qint64 e) { onPanned(vc, s, e); });
+      connect(vc, &AppController::crosshairChanged, this,
+              [this, vc](qint64 ms, bool a) { onCrosshair(vc, ms, a); });
+      connect(vc, &AppController::dataLoaded, this, [this, vc] { onViewLoaded(vc); });
+      connect(vc, &AppController::activated, this, [this, vc] { activateController(vc); });
+      connect(vc, &AppController::timeframeChanged, this, [this, slot, vc] {
+        if (slot >= 0 && slot < paneTimeframes_.size()) paneTimeframes_[slot] = vc->timeframe();
+      });
+    }
+
+    vc->setChart(chart);
     if (started_) configureView(vc, slot);
     if (!active_) activateController(vc);
     if (started_) requestStrategiesOnce();
     emit layoutChanged();
+    return vc;
   }
 
-  Q_INVOKABLE void unregisterView(int slot) {
+  Q_INVOKABLE void detachChart(int slot) {
     AppController *vc = views_.value(slot, nullptr);
     if (!vc) return;
     disconnect(vc, nullptr, this, nullptr);
@@ -191,6 +203,8 @@ public:
         emit activeChanged();
       }
     }
+    vc->setChart(nullptr);  // stop painting into the about-to-be-destroyed item
+    vc->deleteLater();
     emit layoutChanged();
   }
 

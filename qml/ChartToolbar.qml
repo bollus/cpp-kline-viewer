@@ -81,31 +81,8 @@ Rectangle {
             flat: true
             implicitHeight: 28
             onClicked: root.openIndicators()
-
-            contentItem: RowLayout {
-                anchors.fill: parent
-                spacing: 6
-                anchors.verticalCenter: parent.verticalCenter
-
-                Image {
-                    source: "qrc:/resources/icons/indicator.svg"
-                    width: 16
-                    height: 16
-                    fillMode: Image.PreserveAspectFit
-                }
-
-                Text {
-                    text: parent.parent.text
-                    color: theme.textSecondary
-                    font.pixelSize: 12
-                    verticalAlignment: Text.AlignVCenter
-                }
-            }
-
-            background: Rectangle {
-                radius: 6
-                color: parent.hovered ? theme.bgHover : "transparent"
-            }
+            contentItem: Text { text: parent.text; color: theme.textSecondary; font.pixelSize: 12 }
+            background: Rectangle { radius: 6; color: parent.hovered ? theme.bgHover : "transparent" }
         }
 
         Item { Layout.fillWidth: true }

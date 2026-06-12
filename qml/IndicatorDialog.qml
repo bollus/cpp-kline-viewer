@@ -77,9 +77,11 @@ Dialog {
             Layout.fillHeight: true
             spacing: 0
 
-            // Left vertical tabs
+            // Left vertical tabs (pinned width so the right side keeps its room)
             ColumnLayout {
-                Layout.preferredWidth: 188
+                Layout.preferredWidth: 168
+                Layout.minimumWidth: 168
+                Layout.maximumWidth: 168
                 Layout.fillHeight: true
                 Layout.margins: 14
                 spacing: 6
@@ -123,12 +125,13 @@ Dialog {
                 Item { Layout.fillHeight: true }
             }
 
-            Rectangle { Layout.fillHeight: true; width: 1; color: theme.borderSubtle }
+            Rectangle { Layout.fillHeight: true; Layout.preferredWidth: 1; color: theme.borderSubtle }
 
             // Right content
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.minimumWidth: 320
                 Layout.margins: 18
                 spacing: 14
 
@@ -205,6 +208,8 @@ Dialog {
                                     color: theme.textPrimary
                                     font.pixelSize: 14
                                     font.bold: true
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
                                 }
                                 Text {
                                     text: rowDelegate.modelData.desc

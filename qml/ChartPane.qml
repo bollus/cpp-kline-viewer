@@ -3,9 +3,10 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import AlgoHub
 
-// One chart pane: its own AppController + ChartItem, a compact header with an
-// independent timeframe selector and (when more than one pane) a close button.
-// Registers with the Workspace so crosshair/viewport stay in sync across panes.
+// One chart pane: owns a ChartItem and a compact header with an independent
+// timeframe selector and (when more than one pane) a close button. The matching
+// AppController is created/owned by the Workspace (C++) and handed back via
+// attachChart() so crosshair/viewport stay in sync across panes.
 Item {
     id: pane
     property int slot: 0
@@ -13,13 +14,12 @@ Item {
 
     property var timeframes: ["1M", "5M", "15M", "30M", "1H", "2H", "4H", "6H", "12H", "1D", "1W"]
 
-    AppController {
-        id: vc
-        chart: chartItem
-    }
+    // The per-pane controller (a C++ AppController*) is assigned once the
+    // ChartItem exists. It is a plain QObject* here, accessed dynamically.
+    property var vc: null
 
-    Component.onCompleted: controller.registerView(pane.slot, vc)
-    Component.onDestruction: controller.unregisterView(pane.slot)
+    Component.onCompleted: pane.vc = controller.attachChart(pane.slot, chartItem)
+    Component.onDestruction: controller.detachChart(pane.slot)
 
     ColumnLayout {
         anchors.fill: parent
@@ -47,7 +47,7 @@ Item {
                     id: tfButton
                     flat: true
                     implicitHeight: 20
-                    text: vc.timeframeLabel + " ▾"
+                    text: (pane.vc ? pane.vc.timeframeLabel : "") + " ▾"
                     onClicked: tfMenu.open()
                     contentItem: Text {
                         text: tfButton.text
@@ -63,7 +63,7 @@ Item {
                             model: pane.timeframes
                             MenuItem {
                                 text: modelData
-                                onTriggered: { controller.setActiveIndex(pane.slot); vc.setTimeframe(modelData) }
+                                onTriggered: { controller.setActiveIndex(pane.slot); if (pane.vc) pane.vc.setTimeframe(modelData) }
                             }
                         }
                     }

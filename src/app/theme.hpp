@@ -25,17 +25,17 @@ inline QString bgElevated() { return "#2F3134"; }  // popups / dialogs
 inline QString bgHover() { return "#3A3D41"; }
 
 inline QString borderSubtle() { return "rgba(255, 255, 255, 0.08)"; }
-inline QString borderStrong() { return "rgba(77, 142, 239, 0.34)"; }
+inline QString borderStrong() { return "rgba(92, 155, 224, 0.32)"; }
 
 inline QString textPrimary() { return "#DFE1E5"; }
 inline QString textSecondary() { return "#A9ABB0"; }
 inline QString textMuted() { return "#70737A"; }
 
-// Accent softened + slightly desaturated to sit comfortably on the neutral
-// grey surfaces (active states use the *Soft tint, not the solid accent).
-inline QString brandBlue() { return "#4D8EEF"; }
-inline QString brandBlueHover() { return "#6FA6F5"; }
-inline QString brandBlueSoft() { return "rgba(77, 142, 239, 0.14)"; }
+// Muted steel-blue accent: clearly lighter + less saturated than the previous
+// cobalt so active states read as a soft highlight on the neutral grey UI.
+inline QString brandBlue() { return "#5C9BE0"; }
+inline QString brandBlueHover() { return "#79B0EC"; }
+inline QString brandBlueSoft() { return "rgba(92, 155, 224, 0.14)"; }
 
 inline QString green() { return "#16C784"; }
 inline QString red() { return "#F0616D"; }
@@ -49,12 +49,12 @@ inline QString lBgPanel() { return "#FFFFFF"; }
 inline QString lBgElevated() { return "#F4F6F9"; }
 inline QString lBgHover() { return "#EAEEF3"; }
 inline QString lBorderSubtle() { return "rgba(30, 45, 75, 0.09)"; }
-inline QString lBorderStrong() { return "rgba(59, 114, 214, 0.26)"; }
+inline QString lBorderStrong() { return "rgba(63, 122, 208, 0.24)"; }
 inline QString lTextPrimary() { return "#1F2733"; }
 inline QString lTextSecondary() { return "#566071"; }
 inline QString lTextMuted() { return "#8A95A3"; }
-inline QString lBrandBlue() { return "#3B72D6"; }
-inline QString lBrandBlueSoft() { return "rgba(59, 114, 214, 0.10)"; }
+inline QString lBrandBlue() { return "#3F7AD0"; }
+inline QString lBrandBlueSoft() { return "rgba(63, 122, 208, 0.10)"; }
 
 // ---- QColor accessors for the painter (dark) --------------------------------
 inline QColor cBgApp() { return QColor("#1E1E1F"); }
@@ -63,7 +63,7 @@ inline QColor cBgPanel2() { return QColor("#323438"); }
 inline QColor cTextPrimary() { return QColor("#DFE1E5"); }
 inline QColor cTextSecondary() { return QColor("#A9ABB0"); }
 inline QColor cTextMuted() { return QColor("#70737A"); }
-inline QColor cBrandBlue() { return QColor("#4D8EEF"); }
+inline QColor cBrandBlue() { return QColor("#5C9BE0"); }
 inline QColor cGreen() { return QColor("#16C784"); }
 inline QColor cRed() { return QColor("#F0616D"); }
 inline QColor cOrange() { return QColor("#F5A623"); }
