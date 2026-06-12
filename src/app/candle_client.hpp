@@ -474,14 +474,14 @@ private:
       return;
     }
     lastRealtimeMessageMs_ = QDateTime::currentMSecsSinceEpoch();
-    emitDebugLog(QString("WS parsed candle: %1 O=%2 H=%3 L=%4 C=%5")
-      .arg(QDateTime::fromMSecsSinceEpoch(candle.ms).toString("yyyy-MM-dd HH:mm:ss.zzz"))
-      .arg(candle.open)
-      .arg(candle.high)
-      .arg(candle.low)
-      .arg(candle.close));
+    // emitDebugLog(QString("WS parsed candle: %1 O=%2 H=%3 L=%4 C=%5")
+    //   .arg(QDateTime::fromMSecsSinceEpoch(candle.ms).toString("yyyy-MM-dd HH:mm:ss.zzz"))
+    //   .arg(candle.open)
+    //   .arg(candle.high)
+    //   .arg(candle.low)
+    //   .arg(candle.close));
     emit statusChanged("实时", true);
-    emitDebugLog("WS emit candleUpdated");
+    // emitDebugLog("WS emit candleUpdated");
     emit candleUpdated(candle);
   }
 

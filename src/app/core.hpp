@@ -3,7 +3,6 @@
 #include <QtWidgets>
 #include <QtNetwork>
 #include <QtWebSockets/QWebSocket>
-#include <QOpenGLWidget>
 #if Q4J_HAS_QJS_ENGINE
 #include <QJSEngine>
 #include <QJSValueIterator>

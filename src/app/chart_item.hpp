@@ -1,8 +1,11 @@
 #pragma once
 
 #include "core.hpp"
+#include <QQuickPaintedItem>
+#include <QQuickWindow>
+#include <QCursor>
 
-class ChartWidget : public QOpenGLWidget {
+class ChartItem : public QQuickPaintedItem {
   Q_OBJECT
 
 public:
@@ -16,12 +19,16 @@ public:
     Polyline,
     Rectangle
   };
+  Q_ENUM(AnnotationTool)
 
-  explicit ChartWidget(QWidget *parent = nullptr) : QOpenGLWidget(parent) {
-    setMouseTracking(true);
-    setFocusPolicy(Qt::StrongFocus);
-    buildAnnotationStyleToolbar();
+  explicit ChartItem(QQuickItem *parent = nullptr) : QQuickPaintedItem(parent) {
+    setAcceptedMouseButtons(Qt::AllButtons);
+    setAcceptHoverEvents(true);
+    setFlag(QQuickItem::ItemHasContents, true);
+    setActiveFocusOnTab(true);
   }
+
+  QRect rect() const { return QRect(0, 0, qRound(width()), qRound(height())); }
 
   void setDark(bool value) {
     dark_ = value;
@@ -283,11 +290,11 @@ protected:
       event->accept();
       return;
     }
-    QOpenGLWidget::keyPressEvent(event);
+    QQuickPaintedItem::keyPressEvent(event);
   }
 
-  void paintEvent(QPaintEvent *) override {
-    QPainter p(this);
+  void paint(QPainter *painter) override {
+    QPainter &p = *painter;
     p.setRenderHint(QPainter::Antialiasing, false);
     p.setRenderHint(QPainter::TextAntialiasing, true);
     paintBackground(p);
@@ -310,22 +317,25 @@ protected:
     paintOhlcSketch(p);
   }
 
-  void mouseMoveEvent(QMouseEvent *event) override {
-    mousePos_ = cursorPosition(event->position());
+  void mouseMoveEvent(QMouseEvent *event) override { handlePointerMove(event->position()); }
+  void hoverMoveEvent(QHoverEvent *event) override { handlePointerMove(event->position()); }
+
+  void handlePointerMove(const QPointF &posF) {
+    mousePos_ = cursorPosition(posF);
     hasMouse_ = true;
     if (annotationDragMode_ != AnnotationDragMode::None) {
-      updateAnnotationDrag(event->position());
+      updateAnnotationDrag(posF);
       scheduleRepaint();
       return;
     }
     if (drawingAnnotation_) {
-      draftPoint_ = chartPointFromPosition(event->position());
+      draftPoint_ = chartPointFromPosition(posF);
       scheduleRepaint();
       return;
     }
     if (dragging_) {
-      const int dx = event->position().x() - dragStart_.x();
-      const int dy = event->position().y() - dragStart_.y();
+      const int dx = posF.x() - dragStart_.x();
+      const int dy = posF.y() - dragStart_.y();
       const double deltaBars = -dx / std::max(0.05, barStep());
       visibleStart_ = std::clamp(dragVisibleStart_ + deltaBars, 0.0, maxVisibleStart());
       manualPriceOffset_ = dragPriceOffset_ + dy * dragPriceRange_ / std::max(1.0, plotRect().height());
@@ -336,7 +346,7 @@ protected:
       return;
     }
     if (xAxisScaling_) {
-      const int dx = event->position().x() - dragStart_.x();
+      const int dx = posF.x() - dragStart_.x();
       visibleCount_ = std::clamp(static_cast<int>(std::round(axisVisibleCount_ * std::exp(dx / 480.0))), 20, std::max(40, candleCount() + rightOffsetBars_));
       const double newStep = plotRect().width() / std::max(1, visibleCount_);
       const double newLocalIndex = axisAnchorLocalX_ / std::max(0.05, newStep) - 0.5;
@@ -347,14 +357,14 @@ protected:
       return;
     }
     if (yAxisScaling_) {
-      const int dy = event->position().y() - dragStart_.y();
+      const int dy = posF.y() - dragStart_.y();
       manualPriceScale_ = std::clamp(axisPriceScale_ * std::exp(dy / 180.0), 0.2, 8.0);
       scheduleRepaint();
       return;
     }
     hoveredIndex_ = indexAt(mousePos_.x());
-    hoveredPositionIndex_ = positionHitboxAt(event->position());
-    hoveredLineLayerId_ = lineLayerAt(event->position());
+    hoveredPositionIndex_ = positionHitboxAt(posF);
+    hoveredLineLayerId_ = lineLayerAt(posF);
     if (hoveredIndex_ >= 0 && hoveredIndex_ < candleCount()) {
       emit hoveredCandleChanged(&candles_[hoveredIndex_]);
     } else {
@@ -363,7 +373,7 @@ protected:
     update();
   }
 
-  void leaveEvent(QEvent *) override {
+  void hoverLeaveEvent(QHoverEvent *) override {
     hoveredIndex_ = -1;
     hoveredPositionIndex_ = -1;
     hoveredLineLayerId_.clear();
@@ -372,13 +382,13 @@ protected:
     update();
   }
 
-  void resizeEvent(QResizeEvent *event) override {
-    QOpenGLWidget::resizeEvent(event);
+  void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override {
+    QQuickPaintedItem::geometryChange(newGeometry, oldGeometry);
     syncAnnotationStyleToolbar();
   }
 
   void mousePressEvent(QMouseEvent *event) override {
-    setFocus(Qt::MouseFocusReason);
+    forceActiveFocus();
     if (annotationTool_ != AnnotationTool::None && event->button() == Qt::RightButton) {
       if (annotationTool_ == AnnotationTool::Polyline && drawingAnnotation_) finishPolyline();
       else if (!showPositionContextMenu(event->position(), event->globalPosition().toPoint())) showAnnotationContextMenu(event->position(), event->globalPosition().toPoint());
@@ -1476,7 +1486,7 @@ private:
   void editSelectedAnnotationStyle() {
     if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size()) return;
     ManualAnnotation &annotation = manualAnnotations_[selectedAnnotation_];
-    QDialog dialog(this);
+    QDialog dialog(nullptr);
     dialog.setWindowTitle("标记样式");
     auto *layout = new QFormLayout(&dialog);
     auto *lineButton = new QPushButton(annotation.style.line.name());
@@ -1556,37 +1566,10 @@ private:
     return button;
   }
 
-  void buildAnnotationStyleToolbar() {
-    annotationStyleToolbar_ = new QFrame(this);
-    annotationStyleToolbar_->setObjectName("annotationFloatingToolbar");
-    auto *layout = new QHBoxLayout(annotationStyleToolbar_);
-    layout->setContentsMargins(8, 5, 8, 5);
-    layout->setSpacing(6);
-    lineColorButton_ = styleColorButton("线条颜色");
-    fillColorButton_ = styleColorButton("背景颜色");
-    profitColorButton_ = styleColorButton("盈利区颜色");
-    lossColorButton_ = styleColorButton("亏损区颜色");
-    lineWidthSpin_ = new QSpinBox;
-    lineWidthSpin_->setRange(1, 8);
-    lineWidthSpin_->setFixedWidth(52);
-    layout->addWidget(lineColorButton_);
-    layout->addWidget(fillColorButton_);
-    layout->addWidget(profitColorButton_);
-    layout->addWidget(lossColorButton_);
-    layout->addWidget(lineWidthSpin_);
-    annotationStyleToolbar_->hide();
-
-    connect(lineColorButton_, &QPushButton::clicked, this, [this] { chooseSelectedColor(StyleColorRole::Line); });
-    connect(fillColorButton_, &QPushButton::clicked, this, [this] { chooseSelectedColor(StyleColorRole::Fill); });
-    connect(profitColorButton_, &QPushButton::clicked, this, [this] { chooseSelectedColor(StyleColorRole::Profit); });
-    connect(lossColorButton_, &QPushButton::clicked, this, [this] { chooseSelectedColor(StyleColorRole::Loss); });
-    connect(lineWidthSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-      if (selectedAnnotation_ < 0 || selectedAnnotation_ >= manualAnnotations_.size() || syncingStyleToolbar_) return;
-      manualAnnotations_[selectedAnnotation_].style.lineWidth = value;
-      rememberAnnotationStyle(manualAnnotations_[selectedAnnotation_]);
-      update();
-    });
-  }
+  // The floating style toolbar used to be an embedded QFrame child widget.
+  // Under Qt Quick it is replaced by a QML overlay, so the in-item widget is
+  // no longer built here. Style editing remains available via right-click.
+  void buildAnnotationStyleToolbar() {}
 
   void updateColorButton(QPushButton *button, const QColor &color) {
     if (!button) return;
@@ -1623,7 +1606,7 @@ private:
     if (role == StyleColorRole::Fill) current = annotation.style.fill;
     if (role == StyleColorRole::Profit) current = annotation.style.profit;
     if (role == StyleColorRole::Loss) current = annotation.style.loss;
-    const QColor color = QColorDialog::getColor(current, this, "选择颜色");
+    const QColor color = QColorDialog::getColor(current, nullptr, "选择颜色");
     if (!color.isValid()) return;
     if (role == StyleColorRole::Line) annotation.style.line = color;
     if (role == StyleColorRole::Fill) annotation.style.fill = color;
@@ -2989,7 +2972,7 @@ private:
   bool syncingStyleToolbar_ = false;
 };
 
-inline bool ChartWidget::showPositionContextMenu(const QPointF &pos, const QPoint &globalPos) {
+inline bool ChartItem::showPositionContextMenu(const QPointF &pos, const QPoint &globalPos) {
   const int index = positionHitboxAt(pos);
   if (index < 0 || index >= positionHitboxes_.size()) return false;
   QMenu menu;

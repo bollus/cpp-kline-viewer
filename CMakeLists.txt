@@ -7,8 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets OpenGLWidgets Svg)
-find_package(Qt6 QUIET OPTIONAL_COMPONENTS Qml)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets Svg Qml Quick QuickControls2)
 
 set(Q4J_UPDATE_REPO "" CACHE STRING "GitHub repository used by the in-app updater, for example owner/repo")
 set(Q4J_APP_VERSION "${PROJECT_VERSION}" CACHE STRING "Application version shown in the app and embedded in packages")
@@ -33,9 +32,11 @@ qt_add_executable(q4j_kline_viewer
   src/main.cpp
   src/app/theme.hpp
   src/app/core.hpp
-  src/app/chart_widget.hpp
+  src/app/chart_item.hpp
   src/app/candle_client.hpp
-  src/app/main_window.hpp
+  src/app/qml_support.hpp
+  src/app/models.hpp
+  src/app/app_controller.hpp
   resources/resources.qrc
 )
 
@@ -62,16 +63,15 @@ target_link_libraries(q4j_kline_viewer
     Qt6::Widgets
     Qt6::Network
     Qt6::WebSockets
-    Qt6::OpenGLWidgets
     Qt6::Svg
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
 )
 
-if(Qt6Qml_FOUND)
-  target_link_libraries(q4j_kline_viewer PRIVATE Qt6::Qml)
-  target_compile_definitions(q4j_kline_viewer PRIVATE Q4J_HAS_QJS_ENGINE=1)
-else()
-  target_compile_definitions(q4j_kline_viewer PRIVATE Q4J_HAS_QJS_ENGINE=0)
-endif()
+# QtQml (and therefore the QJSEngine used by the custom indicator runtime) is a
+# hard dependency now that the UI is QML based.
+target_compile_definitions(q4j_kline_viewer PRIVATE Q4J_HAS_QJS_ENGINE=1)
 
 target_compile_definitions(q4j_kline_viewer
   PRIVATE

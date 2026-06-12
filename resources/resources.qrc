@@ -43,4 +43,15 @@
     <file alias="calendar.svg">icons/calendar.svg</file>
     <file alias="search.svg">icons/search.svg</file>
   </qresource>
+  <qresource prefix="/qml">
+    <file alias="Main.qml">../qml/Main.qml</file>
+    <file alias="TopBar.qml">../qml/TopBar.qml</file>
+    <file alias="StatusBar.qml">../qml/StatusBar.qml</file>
+    <file alias="DrawingToolbar.qml">../qml/DrawingToolbar.qml</file>
+    <file alias="ChartToolbar.qml">../qml/ChartToolbar.qml</file>
+    <file alias="ReplayBar.qml">../qml/ReplayBar.qml</file>
+    <file alias="RightSidebar.qml">../qml/RightSidebar.qml</file>
+    <file alias="LogPanel.qml">../qml/LogPanel.qml</file>
+    <file alias="IconButton.qml">../qml/IconButton.qml</file>
+  </qresource>
 </RCC>
