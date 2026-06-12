@@ -38,6 +38,16 @@ public:
     });
   }
 
+  ~CandleClient() override {
+    // Members destruct in reverse declaration order: liveWatchdog_ dies before
+    // socket_. socket_'s destructor calls disconnectFromHost() which emits
+    // disconnected(), and our slot there touches the already-destroyed
+    // liveWatchdog_ -> use-after-free. Sever the socket's signals up front (all
+    // members are still alive here) so no slot runs during teardown.
+    socket_.disconnect();
+    liveWatchdog_.stop();
+  }
+
   QString backendBase() const { return backendBase_; }
   QString wsBase() const { return wsBase_; }
   bool realtimeEnabled() const { return realtimeEnabled_; }
