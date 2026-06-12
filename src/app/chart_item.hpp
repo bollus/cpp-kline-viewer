@@ -270,18 +270,16 @@ public:
   }
 
   // ---- Multi-view synchronisation -----------------------------------------
-  // Align this pane's viewport to a wall-clock [startMs, endMs] window coming
-  // from a sibling pane. Index space differs per timeframe, so we resolve the
-  // matching candle indices locally. We intentionally do NOT emit
-  // visibleRangeChanged here to avoid sync feedback loops.
+  // Align this pane's *position* to a sibling pane's visible window. We only
+  // sync the centre time and KEEP this pane's own zoom level (visibleCount_),
+  // so panning one chart moves the others but zooming does not change them.
+  // Index space differs per timeframe, so we resolve indices locally. We do
+  // NOT emit viewportInteracted here, to avoid sync feedback loops.
   void setVisibleRangeByTime(qint64 startMs, qint64 endMs) {
     if (candles_.isEmpty() || endMs <= startMs) return;
-    const int startIdx = indexAtTime(startMs);
-    const int endIdx = indexAtTime(endMs);
-    int count = endIdx - startIdx + 1;
-    if (count < 20) count = 20;
-    visibleCount_ = std::clamp(count, 20, std::max(40, candleCount() + rightOffsetBars_));
-    visibleStart_ = std::clamp(static_cast<double>(startIdx), 0.0, maxVisibleStart());
+    const qint64 centerMs = startMs + (endMs - startMs) / 2;
+    const double centerIdx = static_cast<double>(indexAtTime(centerMs));
+    visibleStart_ = std::clamp(centerIdx - visibleCount_ / 2.0, 0.0, maxVisibleStart());
     update();
   }
 
@@ -393,7 +391,7 @@ protected:
       visibleStart_ = std::clamp(axisAnchorIndex_ - newLocalIndex, 0.0, maxVisibleStart());
       emitOverlayRange();
       emitVisibleRange();
-      emit viewportInteracted(visibleStartMs(), visibleEndMs());
+      // X-axis drag is a zoom/scale gesture — not broadcast to sibling panes.
       scheduleRepaint();
       return;
     }
@@ -533,7 +531,8 @@ protected:
     requestMoreIfNeeded();
     emitOverlayRange();
     emitVisibleRange();
-    emit viewportInteracted(visibleStartMs(), visibleEndMs());
+    // Zoom is intentionally NOT broadcast to sibling panes: each pane keeps its
+    // own zoom level. Only panning (handlePointerMove) syncs position.
     scheduleRepaint();
   }
 
