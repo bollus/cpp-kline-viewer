@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
   appFont.setStyleStrategy(static_cast<QFont::StyleStrategy>(QFont::PreferAntialias | QFont::PreferQuality));
   app.setFont(appFont);
 
-  QQuickWindow::setTextRenderType(QQuickWindow::NativeRendering);
+  QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
   QQuickStyle::setStyle("Basic");
 
   ThemeProvider theme;
