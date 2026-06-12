@@ -145,8 +145,7 @@ public:
   Q_INVOKABLE void start() {
     loadGlobalSettings();
     started_ = true;
-    for (auto it = views_.constBegin(); it != views_.constEnd(); ++it)
-      configureView(it.value(), it.key());
+    for (AppController *vc : views_) configureView(vc, slotOf_.value(vc, -1));
     requestStrategiesOnce();
   }
 
@@ -156,61 +155,65 @@ public:
   // so we never depend on AppController being a creatable QML type. The pane
   // only creates its ChartItem and hands it over; we wire everything else up
   // and return the controller so the pane can read its per-view properties.
+  //
+  // A *fresh* controller is created on every attach and removed by object
+  // identity on detach. We never reuse by slot, because layout switches create
+  // the new panes before destroying the old ones (transiently two panes share a
+  // slot); keying lifetime by the controller object avoids deleting the
+  // controller the new pane just received. We also do NOT emit layoutChanged()
+  // here — that signal drives the Loader that creates/destroys these very
+  // panes, so emitting it during pane lifecycle causes a binding loop / re-entrancy.
   Q_INVOKABLE QObject *attachChart(int slot, QObject *chartObj) {
     if (slot < 0) return nullptr;
     ChartItem *chart = qobject_cast<ChartItem *>(chartObj);
 
-    AppController *vc = views_.value(slot, nullptr);
-    if (!vc) {
-      vc = new AppController(this);
-      views_.insert(slot, vc);
-      vc->setSharedModels(logModel_, strategyModel_);
+    AppController *vc = new AppController(this);
+    views_.append(vc);
+    slotOf_.insert(vc, slot);
+    vc->setSharedModels(logModel_, strategyModel_);
 
-      connect(vc, &AppController::viewportChanged, this,
-              [this, vc](qint64 s, qint64 e) { onPanned(vc, s, e); });
-      connect(vc, &AppController::crosshairChanged, this,
-              [this, vc](qint64 ms, bool a) { onCrosshair(vc, ms, a); });
-      connect(vc, &AppController::dataLoaded, this, [this, vc] { onViewLoaded(vc); });
-      connect(vc, &AppController::activated, this, [this, vc] { activateController(vc); });
-      connect(vc, &AppController::timeframeChanged, this, [this, slot, vc] {
-        if (slot >= 0 && slot < paneTimeframes_.size()) paneTimeframes_[slot] = vc->timeframe();
-      });
-    }
+    connect(vc, &AppController::viewportChanged, this,
+            [this, vc](qint64 s, qint64 e) { onPanned(vc, s, e); });
+    connect(vc, &AppController::crosshairChanged, this,
+            [this, vc](qint64 ms, bool a) { onCrosshair(vc, ms, a); });
+    connect(vc, &AppController::dataLoaded, this, [this, vc] { onViewLoaded(vc); });
+    connect(vc, &AppController::activated, this, [this, vc] { activateController(vc); });
+    connect(vc, &AppController::timeframeChanged, this, [this, slot, vc] {
+      if (slot >= 0 && slot < paneTimeframes_.size()) paneTimeframes_[slot] = vc->timeframe();
+    });
 
     vc->setChart(chart);
     if (started_) configureView(vc, slot);
     if (!active_) activateController(vc);
     if (started_) requestStrategiesOnce();
-    emit layoutChanged();
     return vc;
   }
 
-  Q_INVOKABLE void detachChart(int slot) {
-    AppController *vc = views_.value(slot, nullptr);
+  Q_INVOKABLE void detachChart(QObject *controllerObj) {
+    AppController *vc = qobject_cast<AppController *>(controllerObj);
     if (!vc) return;
     disconnect(vc, nullptr, this, nullptr);
-    views_.remove(slot);
+    views_.removeAll(vc);
+    slotOf_.remove(vc);
     if (active_ == vc) {
       disconnectActive();
       active_ = nullptr;
       activeSlot_ = -1;
       if (!views_.isEmpty()) {
-        auto it = views_.constBegin();
-        activeSlot_ = it.key();
-        active_ = it.value();
+        active_ = views_.first();
+        activeSlot_ = slotOf_.value(active_, -1);
         connectActive();
         emitActiveForwarded();
-        emit activeChanged();
       }
+      emit activeChanged();
     }
     vc->setChart(nullptr);  // stop painting into the about-to-be-destroyed item
     vc->deleteLater();
-    emit layoutChanged();
   }
 
   Q_INVOKABLE void setActiveIndex(int slot) {
-    AppController *vc = views_.value(slot, nullptr);
-    if (vc) activateController(vc);
+    for (AppController *vc : views_)
+      if (slotOf_.value(vc, -1) == slot) { activateController(vc); return; }
   }
 
   Q_INVOKABLE QString timeframeForSlot(int slot) const {
@@ -250,8 +253,7 @@ public:
     ws_ = ws.trimmed();
     realtime_ = realtime;
     saveBackendSettings();
-    for (auto it = views_.constBegin(); it != views_.constEnd(); ++it)
-      it.value()->configureBackendSilent(http_, ws_, realtime_);
+    for (AppController *vc : views_) vc->configureBackendSilent(http_, ws_, realtime_);
     strategiesRequested_ = false;
     requestStrategiesOnce();
     emit backendChanged();
@@ -302,7 +304,7 @@ private:
     if (active_ == vc) return;
     disconnectActive();
     active_ = vc;
-    activeSlot_ = views_.key(vc, -1);
+    activeSlot_ = slotOf_.value(vc, -1);
     connectActive();
     emit activeChanged();
     emitActiveForwarded();
@@ -389,7 +391,8 @@ private:
   LogModel *logModel_ = nullptr;
   StrategyModel *strategyModel_ = nullptr;
 
-  QHash<int, AppController *> views_;
+  QList<AppController *> views_;          // all live panes, in creation order
+  QHash<AppController *, int> slotOf_;    // controller -> its pane slot
   AppController *active_ = nullptr;
   int activeSlot_ = -1;
   QList<QMetaObject::Connection> activeConns_;

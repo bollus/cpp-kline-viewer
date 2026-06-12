@@ -19,7 +19,7 @@ Item {
     property var vc: null
 
     Component.onCompleted: pane.vc = controller.attachChart(pane.slot, chartItem)
-    Component.onDestruction: controller.detachChart(pane.slot)
+    Component.onDestruction: controller.detachChart(pane.vc)
 
     ColumnLayout {
         anchors.fill: parent
