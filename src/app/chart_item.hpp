@@ -1602,20 +1602,14 @@ private:
         return;
       }
       QRectF box = annotationRect(annotation, minPrice, maxPrice);
-      const bool block = annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock;
-      QColor fill = annotation.style.fill.isValid() ? annotation.style.fill : color;
-      fill.setAlpha(annotation.style.opacity);
+      QColor fill = annotation.style.fill.isValid() ? annotation.style.fill : QColor("#6ed7f6");
+      fill.setAlpha(draft ? std::min(120, annotation.style.opacity + 28) : annotation.style.opacity);
       if (!sceneGeometryAlreadyDrawn) {
         QPen pen(lineColor, std::max(1.6, static_cast<double>(lineWidth)));
         pen.setJoinStyle(Qt::RoundJoin);
         p.setPen(pen);
-        p.setBrush(block ? fill : Qt::NoBrush);
+        p.setBrush(fill);
         p.drawRect(box);
-      }
-      if (block) {
-        p.setPen(lineColor);
-        p.setFont(uiFont(11, QFont::DemiBold));
-        p.drawText(box.adjusted(6, 4, -6, -4), Qt::AlignTop | Qt::AlignLeft, annotation.tool == AnnotationTool::LongBlock ? "L" : "S");
       }
     }
     if (selected) drawAnnotationSelection(p, annotation, minPrice, maxPrice);
