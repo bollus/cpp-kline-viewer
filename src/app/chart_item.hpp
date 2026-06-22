@@ -353,12 +353,8 @@ protected:
       plotClip->setClipRect(plotRect());
       plotClip->setIsRectangular(true);
       root->appendChildNode(plotClip);
-      appendGridSceneNodes(plotClip);
+      appendGridSceneNodes(plotClip, minPrice, maxPrice);
       appendCandleSceneNodes(plotClip, minPrice, maxPrice);
-      appendGenericLayerSceneNodes(plotClip, minPrice, maxPrice);
-      appendLegacyOverlaySceneNodes(plotClip, minPrice, maxPrice);
-      appendIndicatorSceneNodes(plotClip, minPrice, maxPrice);
-      appendManualAnnotationSceneNodes(plotClip, minPrice, maxPrice);
       appendReplayMarkerSceneNode(plotClip);
       appendLatestPriceSceneNodes(plotClip, minPrice, maxPrice);
     }
@@ -396,9 +392,9 @@ protected:
     paintGrid(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
     if (!scenePrimitivesAlreadyDrawn) paintCandles(p);
     paintReplayMarker(p, scenePrimitivesAlreadyDrawn);
-    paintOverlays(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
-    paintIndicators(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
-    paintManualAnnotations(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
+    paintOverlays(p, minPrice, maxPrice, false);
+    paintIndicators(p, minPrice, maxPrice, false);
+    paintManualAnnotations(p, minPrice, maxPrice, false);
     paintLatestPriceLine(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
     paintLayerHints(p);
     paintCrosshair(p);
@@ -703,20 +699,67 @@ private:
     return maxPrice - ((y - r.top()) / r.height()) * (maxPrice - minPrice);
   }
 
+  double niceStep(double rawStep) const {
+    if (!std::isfinite(rawStep) || rawStep <= 0.0) return 1.0;
+    const double exponent = std::floor(std::log10(rawStep));
+    const double magnitude = std::pow(10.0, exponent);
+    const double normalized = rawStep / magnitude;
+    double nice = 1.0;
+    if (normalized <= 1.0) nice = 1.0;
+    else if (normalized <= 2.0) nice = 2.0;
+    else if (normalized <= 2.5) nice = 2.5;
+    else if (normalized <= 5.0) nice = 5.0;
+    else nice = 10.0;
+    return nice * magnitude;
+  }
+
+  QVector<double> priceGridTicks(double minPrice, double maxPrice) const {
+    QVector<double> ticks;
+    const QRectF r = plotRect();
+    const double range = maxPrice - minPrice;
+    if (!std::isfinite(range) || range <= 0.0 || r.height() <= 0.0) return ticks;
+    const double targetRows = std::clamp(r.height() / 58.0, 5.0, 15.0);
+    const double step = niceStep(range / targetRows);
+    const double first = std::ceil(minPrice / step) * step;
+    for (double price = first; price <= maxPrice + step * 0.5; price += step) {
+      if (price >= minPrice - step * 0.5) ticks.push_back(price);
+      if (ticks.size() > 80) break;
+    }
+    return ticks;
+  }
+
+  QVector<int> timeGridIndexes() const {
+    QVector<int> indexes;
+    if (candles_.isEmpty()) return indexes;
+    const QRectF r = plotRect();
+    const double stepPx = std::max(0.05, barStep());
+    const int spacingBars = std::max(1, static_cast<int>(std::ceil(132.0 / stepPx)));
+    const int niceSpacing = static_cast<int>(niceStep(spacingBars));
+    const int first = static_cast<int>(std::floor(visibleStart_ / niceSpacing)) * niceSpacing;
+    const int last = static_cast<int>(std::ceil(visibleStart_ + visibleCount_));
+    for (int index = first; index <= last; index += niceSpacing) {
+      if (index >= 0 && index < candleCount()) indexes.push_back(index);
+      if (indexes.size() > 80) break;
+    }
+    return indexes;
+  }
+
   double indexForX(double x) const {
     return visibleStart_ + (x - plotRect().left()) / std::max(0.05, barStep()) - 0.5;
   }
 
-  void appendGridSceneNodes(QSGNode *root) const {
+  void appendGridSceneNodes(QSGNode *root, double minPrice, double maxPrice) const {
     const QRectF r = plotRect();
     QVector<QLineF> gridLines;
-    gridLines.reserve(21);
-    for (int i = 0; i <= 10; ++i) {
-      const double y = r.top() + r.height() * i / 10.0;
+    const QVector<double> yTicks = priceGridTicks(minPrice, maxPrice);
+    const QVector<int> xTicks = timeGridIndexes();
+    gridLines.reserve(yTicks.size() + xTicks.size());
+    for (double price : yTicks) {
+      const double y = yFor(price, minPrice, maxPrice);
       gridLines.push_back(QLineF(QPointF(r.left(), y), QPointF(r.right(), y)));
     }
-    for (int i = 0; i <= 8; ++i) {
-      const double x = r.left() + r.width() * i / 8.0;
+    for (int index : xTicks) {
+      const double x = r.left() + (index - visibleStart_ + 0.5) * barStep();
       gridLines.push_back(QLineF(QPointF(x, r.top()), QPointF(x, r.bottom())));
     }
     if (auto *node = q4j::chart_scene::createLineBatchNode(gridLines, grid())) root->appendChildNode(node);
@@ -996,20 +1039,20 @@ private:
   void paintGrid(QPainter &p, double minPrice, double maxPrice, bool sceneLinesAlreadyDrawn = false) {
     const QRectF r = plotRect();
     p.setFont(numberFont(12, QFont::Medium));
-    const int yTicks = 10;
+    const QVector<double> yTicks = priceGridTicks(minPrice, maxPrice);
+    const QVector<int> xTicks = timeGridIndexes();
     if (!sceneLinesAlreadyDrawn) p.setPen(QPen(grid(), 1));
-    for (int i = 0; i <= yTicks; ++i) {
-      const double y = r.top() + r.height() * i / yTicks;
+    for (double price : yTicks) {
+      const double y = yFor(price, minPrice, maxPrice);
       if (!sceneLinesAlreadyDrawn) p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
-      const double price = maxPrice - (maxPrice - minPrice) * i / yTicks;
       p.setPen(muted());
-      p.drawText(QRectF(r.right() + 8, y - 9, 66, 18), Qt::AlignVCenter | Qt::AlignLeft, QString::number(price, 'f', price > 100 ? 0 : 2));
+      const int precision = std::abs(price) >= 1000 ? 1 : (std::abs(price) >= 100 ? 2 : 4);
+      p.drawText(QRectF(r.right() + 8, y - 9, 74, 18), Qt::AlignVCenter | Qt::AlignLeft, QString::number(price, 'f', precision));
       if (!sceneLinesAlreadyDrawn) p.setPen(QPen(grid(), 1));
     }
-    for (int i = 0; i <= 8; ++i) {
-      const double x = r.left() + r.width() * i / 8.0;
+    for (int candleIndex : xTicks) {
+      const double x = r.left() + (candleIndex - visibleStart_ + 0.5) * barStep();
       if (!sceneLinesAlreadyDrawn) p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
-      const int candleIndex = static_cast<int>(std::round(visibleStart_ + (visibleCount_ - 1) * i / 8.0));
       if (candleIndex >= 0 && candleIndex < candleCount()) {
         const QString label = formatChartTime(candles_[candleIndex].ms, "MM-dd HH:mm");
         p.setPen(muted());
@@ -1090,7 +1133,7 @@ private:
   }
 
   QPen highlightedLinePen(const OverlayStyle &style) const {
-    QPen pen(withOpacity(style.stroke, 1.0), std::min(10, std::max(2, style.strokeWidth + 2)));
+    QPen pen(withOpacity(style.stroke, 1.0), std::min(10, std::max(3, style.strokeWidth + 2)));
     if (!style.dash.isEmpty()) pen.setDashPattern(style.dash);
     pen.setCapStyle(Qt::RoundCap);
     pen.setJoinStyle(Qt::RoundJoin);
@@ -1179,7 +1222,7 @@ private:
         p.fillRect(rect, withOpacity(layer.style.fill, layer.style.fillOpacity));
         p.setBrush(Qt::NoBrush);
         p.setPen(layerPen(layer.style));
-        p.drawRect(rect);
+        p.drawRoundedRect(rect, 3, 3);
       }
       const QString text = layer.text.isEmpty() ? layer.group : layer.text;
       if (!text.isEmpty()) {
@@ -1519,25 +1562,37 @@ private:
     if (annotation.tool == AnnotationTool::HorizontalLine) {
       const double y = yFor(annotation.points[0].price, minPrice, maxPrice);
       if (!sceneGeometryAlreadyDrawn) {
-        p.setPen(QPen(lineColor, lineWidth));
+        QPen pen(lineColor, std::max(1.6, static_cast<double>(lineWidth)));
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
         p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
       }
     } else if (annotation.tool == AnnotationTool::VerticalLine) {
       const double x = pointAtIndex(annotation.points[0].index, annotation.points[0].price, minPrice, maxPrice).x();
       if (!sceneGeometryAlreadyDrawn) {
-        p.setPen(QPen(lineColor, lineWidth));
+        QPen pen(lineColor, std::max(1.6, static_cast<double>(lineWidth)));
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
         p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
       }
     } else if (annotation.tool == AnnotationTool::SegmentLine && annotation.points.size() >= 2) {
       if (!sceneGeometryAlreadyDrawn) {
-        p.setPen(QPen(lineColor, lineWidth));
+        QPen pen(lineColor, std::max(1.6, static_cast<double>(lineWidth)));
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
         p.drawLine(annotationPoint(annotation.points[0], minPrice, maxPrice), annotationPoint(annotation.points[1], minPrice, maxPrice));
       }
     } else if (annotation.tool == AnnotationTool::Polyline && annotation.points.size() >= 2) {
       QPolygonF polyline;
       for (const AnnotationPoint &point : annotation.points) polyline << annotationPoint(point, minPrice, maxPrice);
       if (!sceneGeometryAlreadyDrawn) {
-        p.setPen(QPen(lineColor, lineWidth));
+        QPen pen(lineColor, std::max(1.6, static_cast<double>(lineWidth)));
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
         p.drawPolyline(polyline);
       }
     } else if ((annotation.tool == AnnotationTool::Rectangle || annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) && annotation.points.size() >= 2) {
@@ -1551,9 +1606,11 @@ private:
       QColor fill = annotation.style.fill.isValid() ? annotation.style.fill : color;
       fill.setAlpha(annotation.style.opacity);
       if (!sceneGeometryAlreadyDrawn) {
-        p.setPen(QPen(lineColor, lineWidth));
+        QPen pen(lineColor, std::max(1.6, static_cast<double>(lineWidth)));
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
         p.setBrush(block ? fill : Qt::NoBrush);
-        p.drawRect(box);
+        p.drawRoundedRect(box, 3, 3);
       }
       if (block) {
         p.setPen(lineColor);
@@ -2135,8 +2192,10 @@ private:
   }
 
   QPen layerPen(const OverlayStyle &style) const {
-    QPen pen(withOpacity(style.stroke, style.strokeOpacity), style.strokeWidth);
+    QPen pen(withOpacity(style.stroke, style.strokeOpacity), std::max(1.6, static_cast<double>(style.strokeWidth)));
     if (!style.dash.isEmpty()) pen.setDashPattern(style.dash);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
     return pen;
   }
 
@@ -2814,7 +2873,10 @@ private:
 
   void drawLineAt(QPainter &p, qint64 start, qint64 end, double price, const QColor &color, Qt::PenStyle style, double minPrice, double maxPrice) {
     if (!std::isfinite(price)) return;
-    p.setPen(QPen(color, 1, style));
+    QPen pen(color, 1.8, style);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
     p.drawLine(pointAtTime(start, price, minPrice, maxPrice), pointAtTime(end, price, minPrice, maxPrice));
   }
 
@@ -2849,7 +2911,7 @@ private:
     QRectF badge(anchor.x() - textSize.width() / 2.0 - 7, anchor.y() + (below ? 10 : -28), textSize.width() + 14, 18);
     p.setPen(QPen(color, 1));
     p.setBrush(dark_ ? QColor(11, 16, 15, 230) : QColor(255, 253, 247, 235));
-    p.drawRect(badge);
+    p.drawRoundedRect(badge, 3, 3);
     p.setPen(color);
     p.drawText(badge, Qt::AlignCenter, label);
   }
@@ -2935,21 +2997,41 @@ private:
   }
 
   void paintLayerHints(QPainter &p) {
-    p.setFont(uiFont(12, QFont::Medium));
-    int y = 28;
-    auto row = [&](bool visible, const QString &name) {
-      p.setPen(visible ? text() : QColor(muted().red(), muted().green(), muted().blue(), 115));
-      drawEyeIcon(p, QRectF(14, y - 14, 20, 16), visible);
-      p.drawText(QRectF(40, y - 16, 170, 20), Qt::AlignVCenter | Qt::AlignLeft, name);
-      y += 24;
+    struct HintRow {
+      bool visible = true;
+      QString name;
+      QColor color;
     };
-    row(indicatorEngine_.fvgCircleSettings().enabled, "FVG Circle");
-    for (const IndicatorScript &script : indicatorEngine_.scripts()) {
-      row(script.enabled, script.name);
-    }
-    for (const QString &group : layerGroupOrder_) {
-      row(layerGroupVisible_.value(group, true), group);
-    }
+    QVector<HintRow> rows;
+    rows.push_back({indicatorEngine_.fvgCircleSettings().enabled, "FVG Circle", Theme::cCyan()});
+    for (const IndicatorScript &script : indicatorEngine_.scripts()) rows.push_back({script.enabled, script.name, Theme::cPurple()});
+    for (const QString &group : layerGroupOrder_) rows.push_back({layerGroupVisible_.value(group, true), group, Theme::cBrandBlue()});
+    if (rows.isEmpty()) return;
+
+    const int rowHeight = 25;
+    const QRectF panel(10, 14, 220, 14 + rows.size() * rowHeight);
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(dark_ ? QColor(230, 226, 211, 26) : QColor(23, 31, 27, 28), 1));
+    p.setBrush(dark_ ? QColor(17, 19, 20, 145) : QColor(255, 253, 247, 178));
+    p.drawRoundedRect(panel, 6, 6);
+
+    p.setFont(uiFont(12, QFont::Medium));
+    int y = 32;
+    for (const HintRow &rowData : rows) {
+      const QRectF rowRect(panel.left() + 6, y - 18, panel.width() - 12, 22);
+      QColor rowText = rowData.visible ? text() : QColor(muted().red(), muted().green(), muted().blue(), 125);
+      QColor dot = rowData.color;
+      dot.setAlpha(rowData.visible ? 230 : 92);
+      p.setPen(Qt::NoPen);
+      p.setBrush(dot);
+      p.drawEllipse(QPointF(rowRect.left() + 9, rowRect.center().y()), 4.0, 4.0);
+      drawEyeIcon(p, QRectF(rowRect.right() - 25, rowRect.top() + 3, 20, 16), rowData.visible);
+      p.setPen(rowText);
+      p.drawText(QRectF(rowRect.left() + 22, rowRect.top(), rowRect.width() - 54, rowRect.height()), Qt::AlignVCenter | Qt::AlignLeft, rowData.name);
+      y += rowHeight;
+    };
+    p.restore();
   }
 
   void drawEyeIcon(QPainter &p, const QRectF &rect, bool visible) {
@@ -3160,8 +3242,8 @@ private:
     const int customCount = indicatorEngine_.scripts().size();
     const int layerGroupCount = layerGroupOrder_.size();
     const int totalRows = 1 + customCount + layerGroupCount;
-    if (point.x() < 8 || point.x() > 230 || point.y() < 10 || point.y() > 14 + totalRows * 24) return false;
-    const int row = static_cast<int>((point.y() - 14) / 24);
+    if (point.x() < 10 || point.x() > 230 || point.y() < 14 || point.y() > 28 + totalRows * 25) return false;
+    const int row = static_cast<int>((point.y() - 20) / 25);
     if (row == 0) {
       FvgCircleSettings settings = indicatorEngine_.fvgCircleSettings();
       settings.enabled = !settings.enabled;
@@ -3358,35 +3440,41 @@ private:
     const Candle &c = candles_[hoveredIndex_];
     const bool green = c.close >= c.open;
     const QColor color = green ? up() : down();
-    QRectF panel(width() - 284, 18, 176, 150);
-    p.setPen(QPen(dark_ ? QColor(230, 226, 211, 34) : QColor(23, 31, 27, 34), 1));
-    p.setBrush(dark_ ? QColor(14, 19, 17, 178) : QColor(255, 253, 247, 210));
-    p.drawRect(panel);
+    QRectF panel(width() - 292, 18, 184, 146);
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(dark_ ? QColor(230, 226, 211, 42) : QColor(23, 31, 27, 44), 1));
+    p.setBrush(dark_ ? QColor(20, 22, 23, 218) : QColor(255, 253, 247, 232));
+    p.drawRoundedRect(panel, 6, 6);
 
     p.setFont(uiFont(11, QFont::DemiBold));
     p.setPen(QColor("#DFD0B8"));
-    p.drawText(panel.adjusted(8, 8, 0, 0), "OHLC 示意图");
+    p.drawText(panel.adjusted(10, 9, 0, 0), "OHLC");
 
-    const double top = panel.top() + 30;
-    const double bodyTop = panel.top() + 58;
-    const double bodyBottom = panel.top() + 96;
-    const double bottom = panel.bottom() - 16;
-    const double cx = panel.center().x();
-    p.setPen(QPen(color, 2));
+    const double top = panel.top() + 42;
+    const double bodyTop = panel.top() + 64;
+    const double bodyBottom = panel.top() + 102;
+    const double bottom = panel.bottom() - 26;
+    const double cx = panel.left() + panel.width() * 0.52;
+    QPen wickPen(color, 2.2);
+    wickPen.setCapStyle(Qt::RoundCap);
+    p.setPen(wickPen);
     p.drawLine(QPointF(cx, top), QPointF(cx, bottom));
-    QRectF body(cx - 11, bodyTop, 22, bodyBottom - bodyTop);
-    p.fillRect(body, color);
-    p.drawRect(body);
+    QRectF body(cx - 12, bodyTop, 24, bodyBottom - bodyTop);
+    p.setBrush(QColor(color.red(), color.green(), color.blue(), green ? 210 : 190));
+    p.setPen(QPen(color, 1.5));
+    p.drawRoundedRect(body, 2, 2);
 
     p.setFont(numberFont(12, QFont::Medium));
     p.setPen(muted());
-    p.drawText(QPointF(panel.left() + 10, green ? bodyBottom + 3 : bodyTop + 3), QString("O %1").arg(c.open));
+    p.drawText(QRectF(panel.left() + 10, (green ? bodyBottom : bodyTop) - 9, 70, 18), Qt::AlignVCenter | Qt::AlignLeft, QString("O %1").arg(c.open));
     p.setPen(color);
-    p.drawText(QPointF(panel.left() + 10, green ? bodyTop + 3 : bodyBottom + 3), QString("C %1").arg(c.close));
+    p.drawText(QRectF(panel.left() + 10, (green ? bodyTop : bodyBottom) - 9, 70, 18), Qt::AlignVCenter | Qt::AlignLeft, QString("C %1").arg(c.close));
     p.setPen(QColor("#DFD0B8"));
-    p.drawText(QPointF(panel.right() - 72, top + 3), QString("H %1").arg(c.high));
+    p.drawText(QRectF(panel.right() - 78, top - 9, 68, 18), Qt::AlignVCenter | Qt::AlignLeft, QString("H %1").arg(c.high));
     p.setPen(QColor("#72d9f7"));
-    p.drawText(QPointF(panel.right() - 72, bottom + 3), QString("L %1").arg(c.low));
+    p.drawText(QRectF(panel.right() - 78, bottom - 9, 68, 18), Qt::AlignVCenter | Qt::AlignLeft, QString("L %1").arg(c.low));
+    p.restore();
   }
 
   QVector<Candle> candles_;
