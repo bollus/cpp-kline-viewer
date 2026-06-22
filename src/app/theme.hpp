@@ -3,72 +3,60 @@
 #include <QColor>
 #include <QString>
 
-// Centralized design tokens for the AlgoHub trading terminal.
-//
-// The dark palette is derived from an OKLCH ramp (hue ~255, low chroma) so the
-// base surface is a deep desaturated blue-slate rather than pure black, with an
-// even perceptual step between surface levels and high-contrast text. Values
-// are baked to sRGB hex for use in Qt stylesheets and QPainter.
+// Centralized design tokens for the Q4J trading terminal.
 namespace Theme {
 
 // ---- Dark palette (primary) -------------------------------------------------
-// Anchored to three base surfaces (IDE-style neutral greys):
-//   chart background  #1E1E1F
-//   panel surfaces    #2B2D30
-//   navigation bar    #252526
-// the rest are derived as steps around those bases.
-inline QString bgApp() { return "#1E1E1F"; }       // chart / main canvas
-inline QString bgPanel() { return "#2B2D30"; }     // side / log panels
-inline QString bgPanel2() { return "#323438"; }    // nested panel surface
-inline QString bgToolbar() { return "#252526"; }   // top nav / toolbars
-inline QString bgElevated() { return "#2F3134"; }  // popups / dialogs
-inline QString bgHover() { return "#3A3D41"; }
+inline QString bgApp() { return "#070B10"; }       // app shell / chart canvas
+inline QString bgPanel() { return "#0E141B"; }     // side / log panels
+inline QString bgPanel2() { return "#151D27"; }    // nested panel surface
+inline QString bgToolbar() { return "#0A1017"; }   // top nav / toolbars
+inline QString bgElevated() { return "#192330"; }  // popups / dialogs
+inline QString bgHover() { return "#1E2A38"; }
 
-inline QString borderSubtle() { return "rgba(255, 255, 255, 0.08)"; }
-inline QString borderStrong() { return "rgba(92, 155, 224, 0.32)"; }
+inline QString borderSubtle() { return "rgba(164, 185, 211, 0.11)"; }
+inline QString borderStrong() { return "rgba(53, 208, 181, 0.42)"; }
 
-inline QString textPrimary() { return "#DFE1E5"; }
-inline QString textSecondary() { return "#A9ABB0"; }
-inline QString textMuted() { return "#70737A"; }
+inline QString textPrimary() { return "#EAF2F8"; }
+inline QString textSecondary() { return "#9FB1C5"; }
+inline QString textMuted() { return "#66788D"; }
 
-// Muted steel-blue accent: clearly lighter + less saturated than the previous
-// cobalt so active states read as a soft highlight on the neutral grey UI.
-inline QString brandBlue() { return "#5C9BE0"; }
-inline QString brandBlueHover() { return "#79B0EC"; }
-inline QString brandBlueSoft() { return "rgba(92, 155, 224, 0.14)"; }
+inline QString brandBlue() { return "#35D0B5"; }
+inline QString brandBlueHover() { return "#5DE7D1"; }
+inline QString brandBlueSoft() { return "rgba(53, 208, 181, 0.15)"; }
 
-inline QString green() { return "#16C784"; }
-inline QString red() { return "#F0616D"; }
-inline QString orange() { return "#F5A623"; }
-inline QString purple() { return "#A66CFF"; }
-inline QString cyan() { return "#00D5D8"; }
+inline QString green() { return "#2FE6A6"; }
+inline QString red() { return "#FF5D73"; }
+inline QString orange() { return "#F7B955"; }
+inline QString purple() { return "#A78BFA"; }
+inline QString cyan() { return "#38BDF8"; }
 
 // ---- Light palette ----------------------------------------------------------
-inline QString lBgApp() { return "#EDF0F4"; }
+inline QString lBgApp() { return "#EEF3F7"; }
 inline QString lBgPanel() { return "#FFFFFF"; }
-inline QString lBgElevated() { return "#F4F6F9"; }
-inline QString lBgHover() { return "#EAEEF3"; }
-inline QString lBorderSubtle() { return "rgba(30, 45, 75, 0.09)"; }
-inline QString lBorderStrong() { return "rgba(63, 122, 208, 0.24)"; }
-inline QString lTextPrimary() { return "#1F2733"; }
-inline QString lTextSecondary() { return "#566071"; }
-inline QString lTextMuted() { return "#8A95A3"; }
-inline QString lBrandBlue() { return "#3F7AD0"; }
-inline QString lBrandBlueSoft() { return "rgba(63, 122, 208, 0.10)"; }
+inline QString lBgElevated() { return "#F7FAFC"; }
+inline QString lBgHover() { return "#E8F1F5"; }
+inline QString lBorderSubtle() { return "rgba(24, 48, 77, 0.10)"; }
+inline QString lBorderStrong() { return "rgba(0, 145, 128, 0.28)"; }
+inline QString lTextPrimary() { return "#182435"; }
+inline QString lTextSecondary() { return "#536273"; }
+inline QString lTextMuted() { return "#8A9AAA"; }
+inline QString lBrandBlue() { return "#009982"; }
+inline QString lBrandBlueSoft() { return "rgba(0, 153, 130, 0.10)"; }
 
 // ---- QColor accessors for the painter (dark) --------------------------------
-inline QColor cBgApp() { return QColor("#1E1E1F"); }
-inline QColor cBgPanel() { return QColor("#2B2D30"); }
-inline QColor cBgPanel2() { return QColor("#323438"); }
-inline QColor cTextPrimary() { return QColor("#DFE1E5"); }
-inline QColor cTextSecondary() { return QColor("#A9ABB0"); }
-inline QColor cTextMuted() { return QColor("#70737A"); }
-inline QColor cBrandBlue() { return QColor("#5C9BE0"); }
-inline QColor cGreen() { return QColor("#16C784"); }
-inline QColor cRed() { return QColor("#F0616D"); }
-inline QColor cOrange() { return QColor("#F5A623"); }
-inline QColor cPurple() { return QColor("#A66CFF"); }
-inline QColor cCyan() { return QColor("#00D5D8"); }
-inline QColor cGrid() { return QColor(255, 255, 255, 20); }
+inline QColor cBgApp() { return QColor("#070B10"); }
+inline QColor cBgPanel() { return QColor("#0E141B"); }
+inline QColor cBgPanel2() { return QColor("#151D27"); }
+inline QColor cTextPrimary() { return QColor("#EAF2F8"); }
+inline QColor cTextSecondary() { return QColor("#9FB1C5"); }
+inline QColor cTextMuted() { return QColor("#66788D"); }
+inline QColor cBrandBlue() { return QColor("#35D0B5"); }
+inline QColor cGreen() { return QColor("#2FE6A6"); }
+inline QColor cRed() { return QColor("#FF5D73"); }
+inline QColor cOrange() { return QColor("#F7B955"); }
+inline QColor cPurple() { return QColor("#A78BFA"); }
+inline QColor cCyan() { return QColor("#38BDF8"); }
+inline QColor cGrid() { return QColor(119, 144, 168, 24); }
 
 }  // namespace Theme

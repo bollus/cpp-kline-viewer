@@ -27,6 +27,28 @@ ApplicationWindow {
             appWindow.showMaximized()
     }
 
+    Rectangle {
+        anchors.fill: parent
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: theme.dark ? "#0B1720" : "#F8FCFF" }
+            GradientStop { position: 0.46; color: theme.bgApp }
+            GradientStop { position: 1.0; color: theme.dark ? "#05080D" : "#EAF1F6" }
+        }
+    }
+
+    Rectangle {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        width: parent.width * 0.56
+        height: 220
+        opacity: theme.dark ? 0.42 : 0.30
+        gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0.0; color: theme.brandBlueSoft }
+            GradientStop { position: 1.0; color: "transparent" }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -108,7 +130,11 @@ ApplicationWindow {
         y: 56
         width: 280
         padding: 14
-        background: Rectangle { color: theme.bgElevated; border.color: theme.borderSubtle; radius: 10 }
+        background: Rectangle {
+            color: theme.bgElevated
+            border.color: theme.borderSubtle
+            radius: 14
+        }
         contentItem: ColumnLayout {
             spacing: 12
             Text { text: "设置"; color: theme.textPrimary; font.pixelSize: 14; font.bold: true }

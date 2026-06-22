@@ -6,8 +6,8 @@ import QtQuick.Layouts
 // sidebar collapse.
 Rectangle {
     id: root
-    height: 40
-    color: theme.bgToolbar
+    height: 44
+    color: theme.dark ? Qt.rgba(10/255, 16/255, 23/255, 0.92) : theme.bgToolbar
 
     signal toggleSidebar()
     signal openIndicators()
@@ -24,9 +24,9 @@ Rectangle {
 
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: 12
-        anchors.rightMargin: 8
-        spacing: 6
+        anchors.leftMargin: 14
+        anchors.rightMargin: 10
+        spacing: 7
 
         Repeater {
             model: root.primaryTimeframes
@@ -35,19 +35,21 @@ Rectangle {
                 flat: true
                 checkable: true
                 checked: controller.timeframe === modelData
-                implicitHeight: 28
+                implicitHeight: 30
+                implicitWidth: 42
                 onClicked: controller.setTimeframe(modelData)
                 contentItem: Text {
                     text: parent.text
-                    color: parent.checked ? theme.brandBlue : theme.textSecondary
+                    color: parent.checked ? (theme.dark ? "#06110F" : "white") : theme.textSecondary
                     font.pixelSize: 12
                     font.bold: parent.checked
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    radius: 6
-                    color: parent.checked ? theme.brandBlueSoft : (parent.hovered ? theme.bgHover : "transparent")
+                    radius: 10
+                    color: parent.checked ? theme.brandBlue : (parent.hovered ? theme.bgHover : "transparent")
+                    border.color: parent.checked ? theme.brandBlueHover : (parent.hovered ? theme.borderSubtle : "transparent")
                 }
             }
         }
@@ -55,13 +57,13 @@ Rectangle {
         Button {
             text: "更多 ▾"
             flat: true
-            implicitHeight: 28
+            implicitHeight: 30
             onClicked: moreMenu.open()
             contentItem: Text {
                 text: parent.text; color: theme.textSecondary; font.pixelSize: 12
                 horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
             }
-            background: Rectangle { radius: 6; color: parent.hovered ? theme.bgHover : "transparent" }
+            background: Rectangle { radius: 10; color: parent.hovered ? theme.bgHover : "transparent"; border.color: parent.hovered ? theme.borderSubtle : "transparent" }
             Menu {
                 id: moreMenu
                 Repeater {
@@ -74,15 +76,15 @@ Rectangle {
             }
         }
 
-        Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 22; color: theme.borderSubtle }
+        Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 24; color: theme.borderSubtle }
 
         Button {
             text: "指标"
             flat: true
-            implicitHeight: 28
+            implicitHeight: 30
             onClicked: root.openIndicators()
             contentItem: Text { text: parent.text; color: theme.textSecondary; font.pixelSize: 12 }
-            background: Rectangle { radius: 6; color: parent.hovered ? theme.bgHover : "transparent" }
+            background: Rectangle { radius: 10; color: parent.hovered ? theme.bgHover : "transparent"; border.color: parent.hovered ? theme.borderSubtle : "transparent" }
         }
 
         Item { Layout.fillWidth: true }
@@ -103,16 +105,17 @@ Rectangle {
             flat: true
             checkable: true
             checked: controller.replayActive
-            implicitHeight: 28
+            implicitHeight: 30
             onClicked: controller.replayActive = !controller.replayActive
             contentItem: Text {
                 text: parent.text
-                color: parent.checked ? theme.brandBlue : theme.textSecondary
+                color: parent.checked ? (theme.dark ? "#06110F" : "white") : theme.textSecondary
                 font.pixelSize: 12
             }
             background: Rectangle {
-                radius: 6
-                color: parent.checked ? theme.brandBlueSoft : (parent.hovered ? theme.bgHover : "transparent")
+                radius: 10
+                color: parent.checked ? theme.brandBlue : (parent.hovered ? theme.bgHover : "transparent")
+                border.color: parent.checked ? theme.brandBlueHover : (parent.hovered ? theme.borderSubtle : "transparent")
             }
         }
 

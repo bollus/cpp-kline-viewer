@@ -28,8 +28,8 @@ Item {
         // Pane header
         Rectangle {
             Layout.fillWidth: true
-            height: 26
-            color: pane.isActive ? theme.bgPanel2 : theme.bgToolbar
+            height: 30
+            color: pane.isActive ? Qt.rgba(53/255, 208/255, 181/255, 0.09) : Qt.rgba(10/255, 16/255, 23/255, 0.86)
 
             MouseArea {
                 anchors.fill: parent
@@ -46,17 +46,17 @@ Item {
                 Button {
                     id: tfButton
                     flat: true
-                    implicitHeight: 20
+                    implicitHeight: 22
                     text: (pane.vc ? pane.vc.timeframeLabel : "") + " ▾"
                     onClicked: tfMenu.open()
                     contentItem: Text {
                         text: tfButton.text
-                        color: pane.isActive ? theme.brandBlue : theme.textSecondary
+                        color: pane.isActive ? theme.brandBlueHover : theme.textSecondary
                         font.pixelSize: 11
                         font.bold: pane.isActive
                         verticalAlignment: Text.AlignVCenter
                     }
-                    background: Rectangle { radius: 4; color: tfButton.hovered ? theme.bgHover : "transparent" }
+                    background: Rectangle { radius: 8; color: tfButton.hovered ? theme.bgHover : "transparent"; border.color: tfButton.hovered ? theme.borderSubtle : "transparent" }
                     Menu {
                         id: tfMenu
                         Repeater {
@@ -71,7 +71,7 @@ Item {
 
                 Text {
                     text: controller.symbol
-                    color: theme.textMuted
+                    color: pane.isActive ? theme.textSecondary : theme.textMuted
                     font.pixelSize: 11
                     Layout.fillWidth: true
                     elide: Text.ElideRight
@@ -93,12 +93,19 @@ Item {
             Layout.fillHeight: true
             color: theme.bgApp
             border.width: pane.isActive ? 1 : 0
-            border.color: theme.brandBlue
+            border.color: theme.borderStrong
+
+            Rectangle {
+                visible: pane.isActive
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                height: 2
+                color: theme.brandBlue
+            }
 
             ChartItem {
                 id: chartItem
                 anchors.fill: parent
-                anchors.margins: pane.isActive ? 1 : 0
+                anchors.margins: pane.isActive ? 2 : 0
             }
         }
     }

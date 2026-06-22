@@ -5,8 +5,8 @@ import QtQuick.Layouts
 // the right (relocated here from the old top-right indicator).
 Rectangle {
     id: root
-    height: 26
-    color: theme.bgToolbar
+    height: 28
+    color: theme.dark ? "#080D13" : theme.bgToolbar
 
     Rectangle {
         anchors { left: parent.left; right: parent.right; top: parent.top }
@@ -23,6 +23,7 @@ Rectangle {
         Rectangle {
             width: 8; height: 8; radius: 4
             color: controller.connectionLive ? theme.green : theme.textMuted
+            border.color: controller.connectionLive ? Qt.rgba(0.18, 0.90, 0.65, 0.38) : "transparent"
         }
         Text {
             text: controller.connectionStatus

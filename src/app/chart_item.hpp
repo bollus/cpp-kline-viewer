@@ -637,10 +637,10 @@ private:
     return maxVisibleStart() - visibleStart_ <= std::max(2.0, rightOffsetBars_ * 0.25);
   }
 
-  QColor bg() const { return dark_ ? Theme::cBgApp() : QColor("#f6f8fb"); }
+  QColor bg() const { return dark_ ? Theme::cBgApp() : QColor("#f7fbfd"); }
   QColor text() const { return dark_ ? Theme::cTextPrimary() : QColor("#172033"); }
   QColor muted() const { return dark_ ? Theme::cTextSecondary() : QColor("#61708a"); }
-  QColor grid() const { return dark_ ? Theme::cGrid() : QColor(211, 218, 230, 190); }
+  QColor grid() const { return dark_ ? Theme::cGrid() : QColor(211, 222, 232, 168); }
   QColor up() const { return Theme::cGreen(); }
   QColor down() const { return Theme::cRed(); }
 
@@ -724,7 +724,7 @@ private:
     QVector<QLineF> axes;
     axes.push_back(QLineF(r.topRight(), r.bottomRight()));
     axes.push_back(QLineF(r.bottomLeft(), r.bottomRight()));
-    const QColor axisColor = dark_ ? QColor(148, 137, 121, 170) : QColor(190, 201, 218, 230);
+    const QColor axisColor = dark_ ? QColor(101, 126, 151, 132) : QColor(190, 201, 218, 230);
     if (auto *node = q4j::chart_scene::createLineBatchNode(axes, axisColor)) root->appendChildNode(node);
   }
 
@@ -961,9 +961,9 @@ private:
 
   void paintChartFrame(QPainter &p) {
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(dark_ ? QColor(148, 137, 121, 135) : QColor(203, 213, 225, 220), 1));
+    p.setPen(QPen(dark_ ? QColor(92, 116, 140, 112) : QColor(203, 213, 225, 220), 1));
     p.setBrush(Qt::NoBrush);
-    p.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
+    p.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 12, 12);
     p.setRenderHint(QPainter::Antialiasing, false);
   }
 

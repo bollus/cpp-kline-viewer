@@ -6,7 +6,7 @@ import QtQuick.Layouts
 // Info) and a row-per-entry list backed by LogModel.
 Rectangle {
     id: root
-    color: theme.bgPanel
+    color: theme.dark ? "#0B1118" : theme.bgPanel
 
     property bool collapsed: false
     signal requestExport()
@@ -32,13 +32,13 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             height: 34
-            color: theme.bgToolbar
+            color: theme.dark ? "#0A1017" : theme.bgToolbar
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 12
                 anchors.rightMargin: 8
                 spacing: 12
-                Text { text: "服务日志"; color: theme.textPrimary; font.pixelSize: 12; font.bold: true }
+                Text { text: "服务日志"; color: theme.textPrimary; font.pixelSize: 12; font.bold: true; font.letterSpacing: 0.2 }
                 Text { text: "INFO " + controller.logModel.infoCount; color: theme.green; font.pixelSize: 11 }
                 Text { text: "WARN " + controller.logModel.warnCount; color: theme.orange; font.pixelSize: 11 }
                 Text { text: "ERROR " + controller.logModel.errorCount; color: theme.red; font.pixelSize: 11 }
@@ -68,7 +68,7 @@ Rectangle {
             Layout.fillWidth: true
             height: 24
             visible: !root.collapsed
-            color: theme.bgPanel2
+            color: theme.dark ? "#101923" : theme.bgPanel2
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 12
@@ -97,8 +97,8 @@ Rectangle {
             Component.onCompleted: positionViewAtEnd()
             delegate: Rectangle {
                 width: logList.width
-                height: 22
-                color: index % 2 === 0 ? "transparent" : theme.bgPanel2
+                height: 24
+                color: index % 2 === 0 ? "transparent" : (theme.dark ? Qt.rgba(21/255, 29/255, 39/255, 0.55) : theme.bgPanel2)
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 12

@@ -12,8 +12,8 @@ AbstractButton {
     property bool active: false
     property color hoverBg: theme.bgHover
 
-    implicitWidth: 32
-    implicitHeight: 30
+    implicitWidth: 34
+    implicitHeight: 32
     hoverEnabled: true
 
     ToolTip.visible: control.tip.length > 0 && control.hovered
@@ -21,9 +21,12 @@ AbstractButton {
     ToolTip.delay: 500
 
     background: Rectangle {
-        radius: 6
+        radius: 10
         color: control.active ? theme.brandBlueSoft
                : (control.hovered ? control.hoverBg : "transparent")
+        border.color: control.active ? theme.borderStrong
+                    : (control.hovered ? theme.borderSubtle : "transparent")
+        border.width: control.active || control.hovered ? 1 : 0
     }
 
     contentItem: Item {
