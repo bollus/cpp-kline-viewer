@@ -6,7 +6,7 @@ import QtQuick.Layouts
 // Info) and a row-per-entry list backed by LogModel.
 Rectangle {
     id: root
-    color: theme.dark ? "#0B1118" : theme.bgPanel
+    color: theme.bgPanel
 
     property bool collapsed: false
     signal requestExport()
@@ -32,7 +32,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             height: 34
-            color: theme.dark ? "#0A1017" : theme.bgToolbar
+            color: theme.bgToolbar
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 12
@@ -68,7 +68,7 @@ Rectangle {
             Layout.fillWidth: true
             height: 24
             visible: !root.collapsed
-            color: theme.dark ? "#101923" : theme.bgPanel2
+            color: theme.bgPanel2
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 12
@@ -98,7 +98,7 @@ Rectangle {
             delegate: Rectangle {
                 width: logList.width
                 height: 24
-                color: index % 2 === 0 ? "transparent" : (theme.dark ? Qt.rgba(21/255, 29/255, 39/255, 0.55) : theme.bgPanel2)
+                color: index % 2 === 0 ? "transparent" : theme.bgPanel2
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 12

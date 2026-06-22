@@ -1222,7 +1222,7 @@ private:
         p.fillRect(rect, withOpacity(layer.style.fill, layer.style.fillOpacity));
         p.setBrush(Qt::NoBrush);
         p.setPen(layerPen(layer.style));
-        p.drawRoundedRect(rect, 3, 3);
+        p.drawRect(rect);
       }
       const QString text = layer.text.isEmpty() ? layer.group : layer.text;
       if (!text.isEmpty()) {
@@ -1610,7 +1610,7 @@ private:
         pen.setJoinStyle(Qt::RoundJoin);
         p.setPen(pen);
         p.setBrush(block ? fill : Qt::NoBrush);
-        p.drawRoundedRect(box, 3, 3);
+        p.drawRect(box);
       }
       if (block) {
         p.setPen(lineColor);
@@ -1825,6 +1825,69 @@ private:
     return bounds.adjusted(-8, -8, 8, 8);
   }
 
+  bool nearSegment(const QPointF &pos, const QPointF &a, const QPointF &b, double tolerance) const {
+    return distanceToSegment(pos, a, b) <= tolerance;
+  }
+
+  bool nearPolyline(const QPointF &pos, const QPolygonF &points, double tolerance) const {
+    if (points.size() < 2) return false;
+    for (int i = 1; i < points.size(); ++i) {
+      if (nearSegment(pos, points[i - 1], points[i], tolerance)) return true;
+    }
+    return false;
+  }
+
+  bool nearRectEdge(const QPointF &pos, const QRectF &rect, double tolerance) const {
+    if (rect.isNull()) return false;
+    const QRectF expanded = rect.normalized().adjusted(-tolerance, -tolerance, tolerance, tolerance);
+    if (!expanded.contains(pos)) return false;
+    const QRectF r = rect.normalized();
+    return nearSegment(pos, r.topLeft(), r.topRight(), tolerance) ||
+           nearSegment(pos, r.topRight(), r.bottomRight(), tolerance) ||
+           nearSegment(pos, r.bottomRight(), r.bottomLeft(), tolerance) ||
+           nearSegment(pos, r.bottomLeft(), r.topLeft(), tolerance);
+  }
+
+  bool annotationEntityHit(const ManualAnnotation &annotation, const QPointF &pos, double minPrice, double maxPrice) const {
+    const double tolerance = std::max(7.0, std::min(12.0, static_cast<double>(annotation.style.lineWidth) + 6.0));
+    if (annotationHandleAt(annotation, pos, minPrice, maxPrice) >= 0) return true;
+    if (annotation.tool == AnnotationTool::HorizontalLine && !annotation.points.isEmpty()) {
+      const double y = yFor(annotation.points[0].price, minPrice, maxPrice);
+      return std::abs(pos.y() - y) <= tolerance && plotRect().adjusted(-tolerance, 0, tolerance, 0).contains(pos);
+    }
+    if (annotation.tool == AnnotationTool::VerticalLine && !annotation.points.isEmpty()) {
+      const double x = annotationPoint(annotation.points[0], minPrice, maxPrice).x();
+      return std::abs(pos.x() - x) <= tolerance && plotRect().adjusted(0, -tolerance, 0, tolerance).contains(pos);
+    }
+    if (annotation.tool == AnnotationTool::SegmentLine && annotation.points.size() >= 2) {
+      return nearSegment(pos, annotationPoint(annotation.points[0], minPrice, maxPrice), annotationPoint(annotation.points[1], minPrice, maxPrice), tolerance);
+    }
+    if (annotation.tool == AnnotationTool::Polyline && annotation.points.size() >= 2) {
+      QPolygonF polyline;
+      for (const AnnotationPoint &point : annotation.points) polyline << annotationPoint(point, minPrice, maxPrice);
+      return nearPolyline(pos, polyline, tolerance);
+    }
+    if (annotation.tool == AnnotationTool::Rectangle && annotation.points.size() >= 2) {
+      return nearRectEdge(pos, annotationRect(annotation, minPrice, maxPrice), tolerance);
+    }
+    if (isPositionAnnotation(annotation)) {
+      const AnnotationPoint entry = annotation.points[0];
+      const AnnotationPoint profit = annotation.points[1];
+      const AnnotationPoint loss = annotation.points[2];
+      const double endIndex = std::max({entry.index, profit.index, loss.index});
+      const qint64 startMs = timeForIndex(entry.index);
+      const qint64 endMs = timeForIndex(endIndex);
+      const double top = std::max({entry.price, profit.price, loss.price});
+      const double bottom = std::min({entry.price, profit.price, loss.price});
+      const QRectF rect(pointAtTime(startMs, top, minPrice, maxPrice), pointAtTime(endMs, bottom, minPrice, maxPrice));
+      if (nearRectEdge(pos, rect, tolerance)) return true;
+      return nearSegment(pos, pointAtTime(startMs, entry.price, minPrice, maxPrice), pointAtTime(endMs, entry.price, minPrice, maxPrice), tolerance) ||
+             nearSegment(pos, pointAtTime(startMs, profit.price, minPrice, maxPrice), pointAtTime(endMs, profit.price, minPrice, maxPrice), tolerance) ||
+             nearSegment(pos, pointAtTime(startMs, loss.price, minPrice, maxPrice), pointAtTime(endMs, loss.price, minPrice, maxPrice), tolerance);
+    }
+    return false;
+  }
+
   int annotationHandleAt(const ManualAnnotation &annotation, const QPointF &pos, double minPrice, double maxPrice) const {
     if (isPositionAnnotation(annotation)) {
       const QVector<AnnotationPoint> handles = positionAnnotationHandlePoints(annotation);
@@ -1846,7 +1909,7 @@ private:
     visibleRange(minPrice, maxPrice);
     for (int i = manualAnnotations_.size() - 1; i >= 0; --i) {
       const ManualAnnotation &annotation = manualAnnotations_[i];
-      if (annotationBounds(annotation, minPrice, maxPrice).contains(pos)) return i;
+      if (annotationEntityHit(annotation, pos, minPrice, maxPrice)) return i;
     }
     return -1;
   }
