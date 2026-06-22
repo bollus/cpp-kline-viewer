@@ -18,7 +18,7 @@ env:
 
 jobs:
   macos:
-    runs-on: macos-latest
+    runs-on: macos-14
 
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.6.3"
+          version: "6.8.3"
           modules: "qtwebsockets"
           cache: true
 

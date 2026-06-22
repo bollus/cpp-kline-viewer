@@ -59,7 +59,12 @@ public:
 
   void prependCandles(QVector<Candle> older) {
     if (older.isEmpty()) return;
+    if (candles_.isEmpty()) {
+      setCandlesInternal(std::move(older), false);
+      return;
+    }
     const qint64 previousFirst = candles_.isEmpty() ? 0 : candles_.first().ms;
+    const double previousVisibleStart = visibleStart_;
     candles_ += older;
     std::sort(candles_.begin(), candles_.end(), [](const Candle &a, const Candle &b) {
       return a.ms < b.ms;
@@ -68,7 +73,7 @@ public:
       return a.ms == b.ms;
     }), candles_.end());
     const int previousIndex = indexAtTime(previousFirst);
-    if (previousIndex > 0) visibleStart_ += previousIndex;
+    if (previousIndex > 0) visibleStart_ = previousVisibleStart + previousIndex;
     visibleStart_ = std::clamp(visibleStart_, 0.0, maxVisibleStart());
     rebuildIndicatorsNow();
     emitVisibleRange();

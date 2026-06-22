@@ -575,10 +575,18 @@ private:
       emit dataLoaded();
     });
     connect(&client_, &CandleClient::olderCandlesLoaded, this, [this](const QVector<Candle> &candles) {
+      const bool hadLoadedCandles = !loaded_.isEmpty();
       loaded_ += candles;
       normalizeLoaded();
       syncReplayBounds();
-      applyReplayView();
+      if (replayActive_) {
+        applyReplayView();
+      } else if (chart_ && hadLoadedCandles) {
+        chart_->prependCandles(candles);
+      } else {
+        applyReplayView();
+      }
+      updateMarketSummary();
     });
     connect(&client_, &CandleClient::replayCandlesLoaded, this, [this](const QVector<Candle> &candles) {
       loaded_ += candles;
