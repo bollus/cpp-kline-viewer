@@ -1862,7 +1862,8 @@ private:
       return nearPolyline(pos, polyline, tolerance);
     }
     if (annotation.tool == AnnotationTool::Rectangle && annotation.points.size() >= 2) {
-      return nearRectEdge(pos, annotationRect(annotation, minPrice, maxPrice), tolerance);
+      const QRectF rect = annotationRect(annotation, minPrice, maxPrice);
+      return rect.contains(pos) || nearRectEdge(pos, rect, tolerance);
     }
     if (isPositionAnnotation(annotation)) {
       const AnnotationPoint entry = annotation.points[0];
@@ -1873,8 +1874,8 @@ private:
       const qint64 endMs = timeForIndex(endIndex);
       const double top = std::max({entry.price, profit.price, loss.price});
       const double bottom = std::min({entry.price, profit.price, loss.price});
-      const QRectF rect(pointAtTime(startMs, top, minPrice, maxPrice), pointAtTime(endMs, bottom, minPrice, maxPrice));
-      if (nearRectEdge(pos, rect, tolerance)) return true;
+      const QRectF rect = QRectF(pointAtTime(startMs, top, minPrice, maxPrice), pointAtTime(endMs, bottom, minPrice, maxPrice)).normalized();
+      if (rect.contains(pos) || nearRectEdge(pos, rect, tolerance)) return true;
       return nearSegment(pos, pointAtTime(startMs, entry.price, minPrice, maxPrice), pointAtTime(endMs, entry.price, minPrice, maxPrice), tolerance) ||
              nearSegment(pos, pointAtTime(startMs, profit.price, minPrice, maxPrice), pointAtTime(endMs, profit.price, minPrice, maxPrice), tolerance) ||
              nearSegment(pos, pointAtTime(startMs, loss.price, minPrice, maxPrice), pointAtTime(endMs, loss.price, minPrice, maxPrice), tolerance);
