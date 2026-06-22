@@ -356,8 +356,10 @@ protected:
       appendGridSceneNodes(plotClip);
       appendCandleSceneNodes(plotClip, minPrice, maxPrice);
       appendGenericLayerSceneNodes(plotClip, minPrice, maxPrice);
+      appendLegacyOverlaySceneNodes(plotClip, minPrice, maxPrice);
       appendIndicatorSceneNodes(plotClip, minPrice, maxPrice);
       appendManualAnnotationSceneNodes(plotClip, minPrice, maxPrice);
+      appendReplayMarkerSceneNode(plotClip);
       appendLatestPriceSceneNodes(plotClip, minPrice, maxPrice);
     }
 
@@ -393,7 +395,7 @@ protected:
     visibleRange(minPrice, maxPrice);
     paintGrid(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
     if (!scenePrimitivesAlreadyDrawn) paintCandles(p);
-    paintReplayMarker(p);
+    paintReplayMarker(p, scenePrimitivesAlreadyDrawn);
     paintOverlays(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
     paintIndicators(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
     paintManualAnnotations(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
@@ -734,6 +736,15 @@ private:
     const QColor base = latest.close >= latest.open ? up() : down();
     QColor color(base.red(), base.green(), base.blue(), 185);
     appendDashedLineSceneNode(root, QLineF(QPointF(r.left(), y), QPointF(r.right(), y)), color, 6.0, 5.0);
+  }
+
+  void appendReplayMarkerSceneNode(QSGNode *root) const {
+    if (!replayMarkerActive_ || replayMarkerMs_ <= 0 || candles_.isEmpty()) return;
+    const QRectF r = plotRect();
+    const double idx = indexForTime(replayMarkerMs_);
+    const double x = r.left() + (idx - visibleStart_ + 0.5) * barStep();
+    if (x < r.left() - 2 || x > r.right() + 2) return;
+    appendDashedLineSceneNode(root, QLineF(QPointF(x, r.top()), QPointF(x, r.bottom())), Theme::cBrandBlue(), 6.0, 4.0);
   }
 
   void appendDashedLineSceneNode(QSGNode *root, const QLineF &line, const QColor &color, double dash, double gap) const {
@@ -2234,22 +2245,22 @@ private:
       const QJsonObject event = parsed.event;
       const QString type = event.value("eventType").toString();
       const QJsonObject payload = parsed.payload;
-      if (rangeVisible_ && type == "RANGE_BOUNDARY_UPDATED") drawRangeEvent(p, payload, minPrice, maxPrice);
-      if (rangeVisible_ && type == "RANGE_BOUNDARY_TOUCHED") drawRangeTouchEvent(p, payload, event, minPrice, maxPrice);
-      if (nVisible_ && type == "HIGH_N_DETECTED") drawNEvent(p, payload.value("n").toObject(), QColor(223, 208, 184, 220), "N", minPrice, maxPrice);
+      if (rangeVisible_ && type == "RANGE_BOUNDARY_UPDATED") drawRangeEvent(p, payload, minPrice, maxPrice, sceneGenericLayersAlreadyDrawn);
+      if (rangeVisible_ && type == "RANGE_BOUNDARY_TOUCHED") drawRangeTouchEvent(p, payload, event, minPrice, maxPrice, sceneGenericLayersAlreadyDrawn);
+      if (nVisible_ && type == "HIGH_N_DETECTED") drawNEvent(p, payload.value("n").toObject(), QColor(223, 208, 184, 220), "N", minPrice, maxPrice, sceneGenericLayersAlreadyDrawn);
       if (ninVisible_ && type == "HIGH_N_IN_DETECTED") {
-        drawNEvent(p, payload.value("base_n").toObject(), QColor(230, 226, 211, 120), "Base", minPrice, maxPrice);
-        drawNEvent(p, payload.value("signal_n").toObject(), QColor(39, 212, 177, 220), "N-IN", minPrice, maxPrice);
+        drawNEvent(p, payload.value("base_n").toObject(), QColor(230, 226, 211, 120), "Base", minPrice, maxPrice, sceneGenericLayersAlreadyDrawn);
+        drawNEvent(p, payload.value("signal_n").toObject(), QColor(39, 212, 177, 220), "N-IN", minPrice, maxPrice, sceneGenericLayersAlreadyDrawn);
       }
     }
-    if (orderVisible_) drawPositions(p, minPrice, maxPrice);
+    if (orderVisible_) drawPositions(p, minPrice, maxPrice, sceneGenericLayersAlreadyDrawn);
     if (ifvgVisible_) {
       QSet<QString> drawnIfvgs;
       for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
         const QJsonObject event = parsed.event;
         const QString type = event.value("eventType").toString();
         if (type == "ENTRY_SIGNAL_OPEN_SENT" || type == "POSITION_OPEN_FILLED") {
-          drawIfvgEvent(p, parsed.payload, event, drawnIfvgs, minPrice, maxPrice);
+          drawIfvgEvent(p, parsed.payload, event, drawnIfvgs, minPrice, maxPrice, sceneGenericLayersAlreadyDrawn);
         }
       }
     }
@@ -2427,7 +2438,90 @@ private:
     return right >= visibleStart_ - 2.0 && left <= visibleStart_ + visibleCount_ + 2.0;
   }
 
-  void drawRangeEvent(QPainter &p, const QJsonObject &payload, double minPrice, double maxPrice) {
+  void appendLegacyOverlaySceneNodes(QSGNode *root, double minPrice, double maxPrice) const {
+    if (!parsedLayers_.isEmpty() || parsedOverlayEvents_.isEmpty() || candles_.isEmpty()) return;
+    for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+      const QJsonObject event = parsed.event;
+      const QString type = event.value("eventType").toString();
+      const QJsonObject payload = parsed.payload;
+      if (rangeVisible_ && type == "RANGE_BOUNDARY_UPDATED") appendRangeEventSceneNode(root, payload, minPrice, maxPrice);
+      if (nVisible_ && type == "HIGH_N_DETECTED") appendNEventSceneNode(root, payload.value("n").toObject(), QColor(223, 208, 184, 220), minPrice, maxPrice);
+      if (ninVisible_ && type == "HIGH_N_IN_DETECTED") {
+        appendNEventSceneNode(root, payload.value("base_n").toObject(), QColor(230, 226, 211, 120), minPrice, maxPrice);
+        appendNEventSceneNode(root, payload.value("signal_n").toObject(), QColor(39, 212, 177, 220), minPrice, maxPrice);
+      }
+      if (markerVisible_ && rangeVisible_ && type == "RANGE_BOUNDARY_TOUCHED") appendRangeTouchSceneNode(root, payload, event, minPrice, maxPrice);
+    }
+    if (orderVisible_) appendPositionsSceneNodes(root, minPrice, maxPrice);
+    if (ifvgVisible_) {
+      QSet<QString> drawnIfvgs;
+      for (const ParsedOverlayEvent &parsed : parsedOverlayEvents_) {
+        const QString type = parsed.event.value("eventType").toString();
+        if (type == "ENTRY_SIGNAL_OPEN_SENT" || type == "POSITION_OPEN_FILLED") {
+          appendIfvgEventSceneNode(root, parsed.payload, parsed.event, drawnIfvgs, minPrice, maxPrice);
+        }
+      }
+    }
+  }
+
+  void appendRangeEventSceneNode(QSGNode *root, const QJsonObject &payload, double minPrice, double maxPrice) const {
+    const QJsonObject point = payload.value("point").toObject();
+    const double price = point.value("price").toDouble(std::numeric_limits<double>::quiet_NaN());
+    if (!std::isfinite(price)) return;
+    const QString side = point.value("side").toString();
+    const qint64 logicalStart = jsonMs(point.value("time"));
+    const qint64 start = jsonMs(point.value("display_time").isUndefined() ? point.value("time") : point.value("display_time"));
+    const qint64 end = rangeEndMs(side, logicalStart);
+    if (!timeWindowVisible(start, end) || price < minPrice || price > maxPrice) return;
+    const QColor color = side == "HIGH" ? QColor(245, 158, 11, 199) : QColor(56, 189, 248, 199);
+    appendDashedLineSceneNode(root, QLineF(pointAtTime(start, price, minPrice, maxPrice), pointAtTime(end, price, minPrice, maxPrice)), color, 6.0, 4.0);
+  }
+
+  void appendRangeTouchSceneNode(QSGNode *root, const QJsonObject &payload, const QJsonObject &event, double minPrice, double maxPrice) const {
+    const bool upperBreak = payload.value("side").toString() == "UPPER";
+    const int index = indexAtTime(jsonMs(event.value("eventTime")));
+    if (index < 0 || index >= candleCount()) return;
+    const double price = upperBreak ? candles_[index].high : candles_[index].low;
+    const QPointF pos = pointAt(index, price, minPrice, maxPrice) + QPointF(0, upperBreak ? -14 : 14);
+    QVector<QLineF> triangle;
+    if (upperBreak) {
+      triangle << QLineF(QPointF(pos.x(), pos.y() - 8), QPointF(pos.x() - 5, pos.y() + 2))
+               << QLineF(QPointF(pos.x() - 5, pos.y() + 2), QPointF(pos.x() + 5, pos.y() + 2))
+               << QLineF(QPointF(pos.x() + 5, pos.y() + 2), QPointF(pos.x(), pos.y() - 8));
+    } else {
+      triangle << QLineF(QPointF(pos.x(), pos.y() + 8), QPointF(pos.x() - 5, pos.y() - 2))
+               << QLineF(QPointF(pos.x() - 5, pos.y() - 2), QPointF(pos.x() + 5, pos.y() - 2))
+               << QLineF(QPointF(pos.x() + 5, pos.y() - 2), QPointF(pos.x(), pos.y() + 8));
+    }
+    if (auto *node = q4j::chart_scene::createLineBatchNode(triangle, upperBreak ? up() : down())) root->appendChildNode(node);
+  }
+
+  void appendNEventSceneNode(QSGNode *root, const QJsonObject &n, const QColor &color, double minPrice, double maxPrice) const {
+    if (n.isEmpty()) return;
+    QVector<QPointF> pts;
+    auto add = [&](const QString &timeKey, const QString &fallbackTimeKey, const QString &priceKey) {
+      const qint64 t = jsonMs(n.value(timeKey).isUndefined() ? n.value(fallbackTimeKey) : n.value(timeKey));
+      const double price = n.value(priceKey).toDouble(std::numeric_limits<double>::quiet_NaN());
+      if (t > 0 && std::isfinite(price)) pts << pointAtTime(t, price, minPrice, maxPrice);
+    };
+    add("anchor_display_time", "anchor_time", "anchor_price");
+    add("turning_display_time", "turning_time", "turning_price");
+    add("retrace_display_time", "retrace_time", "retrace_price");
+    add("breakout_time", "breakout_time", "breakout_close");
+    if (pts.size() < 2) return;
+    QVector<QLineF> segments;
+    for (int i = 1; i < pts.size(); ++i) segments.push_back(QLineF(pts[i - 1], pts[i]));
+    if (auto *node = q4j::chart_scene::createLineBatchNode(segments, color)) root->appendChildNode(node);
+  }
+
+  void appendIfvgEventSceneNode(QSGNode *root, const QJsonObject &payload, const QJsonObject &event, QSet<QString> &drawn, double minPrice, double maxPrice) const {
+    const QRectF box = ifvgEventRect(payload, event, drawn, minPrice, maxPrice);
+    if (box.isNull()) return;
+    if (auto *fill = q4j::chart_scene::createRectNode(box, QColor(110, 215, 246, 128))) root->appendChildNode(fill);
+    appendRectBorderSceneNode(root, box, QColor(147, 197, 253, 210));
+  }
+
+  void drawRangeEvent(QPainter &p, const QJsonObject &payload, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     const QJsonObject point = payload.value("point").toObject();
     const double price = point.value("price").toDouble(std::numeric_limits<double>::quiet_NaN());
     if (!std::isfinite(price)) return;
@@ -2440,8 +2534,10 @@ private:
     const QPointF a = pointAtTime(start, price, minPrice, maxPrice);
     const QPointF b = pointAtTime(end, price, minPrice, maxPrice);
     const QColor color = side == "HIGH" ? QColor(245, 158, 11, 199) : QColor(56, 189, 248, 199);
-    p.setPen(QPen(color, 1, Qt::DashLine));
-    p.drawLine(a, b);
+    if (!sceneGeometryAlreadyDrawn) {
+      p.setPen(QPen(color, 1, Qt::DashLine));
+      p.drawLine(a, b);
+    }
     p.setPen(color);
     p.drawText(a + QPointF(4, -5), side.isEmpty() ? "Range" : side);
   }
@@ -2453,7 +2549,7 @@ private:
     return base + 10 * barIntervalMs();
   }
 
-  void drawRangeTouchEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, double minPrice, double maxPrice) {
+  void drawRangeTouchEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     const bool upperBreak = payload.value("side").toString() == "UPPER";
     const qint64 time = jsonMs(event.value("eventTime"));
     const int index = indexAtTime(time);
@@ -2467,14 +2563,16 @@ private:
       arrow << QPointF(pos.x(), pos.y() + 8) << QPointF(pos.x() - 5, pos.y() - 2) << QPointF(pos.x() + 5, pos.y() - 2);
     }
     const QColor color = upperBreak ? up() : down();
-    p.setBrush(color);
-    p.setPen(Qt::NoPen);
-    p.drawPolygon(arrow);
+    if (!sceneGeometryAlreadyDrawn) {
+      p.setBrush(color);
+      p.setPen(Qt::NoPen);
+      p.drawPolygon(arrow);
+    }
     p.setPen(color);
     p.drawText(pos + QPointF(8, upperBreak ? 3 : 5), upperBreak ? "Break ↑" : "Break ↓");
   }
 
-  void drawNEvent(QPainter &p, const QJsonObject &n, const QColor &color, const QString &label, double minPrice, double maxPrice) {
+  void drawNEvent(QPainter &p, const QJsonObject &n, const QColor &color, const QString &label, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     if (n.isEmpty()) return;
     QVector<QPointF> pts;
     auto add = [&](const QString &timeKey, const QString &fallbackTimeKey, const QString &priceKey) {
@@ -2487,95 +2585,50 @@ private:
     add("retrace_display_time", "retrace_time", "retrace_price");
     add("breakout_time", "breakout_time", "breakout_close");
     if (pts.size() < 2) return;
-    p.setPen(QPen(color, 2));
-    p.drawPolyline(pts.constData(), pts.size());
+    if (!sceneGeometryAlreadyDrawn) {
+      p.setPen(QPen(color, 2));
+      p.drawPolyline(pts.constData(), pts.size());
+    }
     p.drawText(pts.last() + QPointF(6, -6), label);
   }
 
-  void drawIfvgEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, QSet<QString> &drawn, double minPrice, double maxPrice) {
+  QRectF ifvgEventRect(const QJsonObject &payload, const QJsonObject &event, QSet<QString> &drawn, double minPrice, double maxPrice) const {
     const QJsonObject signal = payload.value("entry_signal").toObject();
     QJsonObject fvg = signal.value("fvg").toObject();
     if (signal.value("type").toString() != "IFVG" && payload.contains("stop_ifvg")) {
       fvg = payload.value("stop_ifvg").toObject();
     }
-    if (signal.value("type").toString() != "IFVG" && fvg.isEmpty()) return;
-    if (fvg.isEmpty()) return;
+    if (signal.value("type").toString() != "IFVG" && fvg.isEmpty()) return {};
+    if (fvg.isEmpty()) return {};
     const double top = fvg.value("top").toDouble(std::numeric_limits<double>::quiet_NaN());
     const double bottom = fvg.value("bottom").toDouble(std::numeric_limits<double>::quiet_NaN());
     const QJsonObject k1 = fvg.value("k1").toObject();
     qint64 start = jsonMs(k1.value("open_time"));
     if (start <= 0) start = jsonMs(fvg.value("k1_time").isUndefined() ? fvg.value("create_time") : fvg.value("k1_time"));
     const qint64 end = jsonMs(fvg.value("ifvg_time").isUndefined() ? signal.value("time") : fvg.value("ifvg_time"));
-    if (!std::isfinite(top) || !std::isfinite(bottom) || start <= 0 || end <= 0) return;
+    if (!std::isfinite(top) || !std::isfinite(bottom) || start <= 0 || end <= 0) return {};
     const QString key = QString("%1:%2:%3:%4").arg(start).arg(end).arg(top, 0, 'g', 14).arg(bottom, 0, 'g', 14);
-    if (drawn.contains(key)) return;
+    if (drawn.contains(key)) return {};
     drawn.insert(key);
     const double startIndex = indexForTime(start);
     const double endIndex = std::max(startIndex, static_cast<double>(indexAtTime(end) - 1));
     QRectF box(pointAtIndex(startIndex, top, minPrice, maxPrice), pointAtIndex(endIndex, bottom, minPrice, maxPrice));
-    box = box.normalized();
+    return box.normalized();
+  }
+
+  void drawIfvgEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, QSet<QString> &drawn, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
+    const QRectF box = ifvgEventRect(payload, event, drawn, minPrice, maxPrice);
+    if (box.isNull()) return;
     p.save();
-    p.fillRect(box, QColor(110, 215, 246, 128));
-    p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(QColor(147, 197, 253, 210), 1));
-    p.drawRect(box);
+    if (!sceneGeometryAlreadyDrawn) {
+      p.fillRect(box, QColor(110, 215, 246, 128));
+      p.setBrush(Qt::NoBrush);
+      p.setPen(QPen(QColor(147, 197, 253, 210), 1));
+      p.drawRect(box);
+    }
     p.drawText(box.topLeft() + QPointF(4, -4), "iFVG");
     p.restore();
   }
-
-  void drawPositionEvent(QPainter &p, const QJsonObject &payload, const QJsonObject &event, double minPrice, double maxPrice) {
-    const qint64 start = jsonMs(payload.value("entry_time").isUndefined() ? event.value("eventTime") : payload.value("entry_time"));
-    const qint64 end = positionEndMs(payload, start);
-    const double entry = payload.value("exec_price").toDouble(payload.value("entry").toDouble(event.value("price").toDouble(std::numeric_limits<double>::quiet_NaN())));
-    const double sl = payload.value("sl").toDouble(std::numeric_limits<double>::quiet_NaN());
-    const double tp1 = payload.value("tp1").toDouble(std::numeric_limits<double>::quiet_NaN());
-    if (start <= 0 || !std::isfinite(entry)) return;
-    if (std::isfinite(tp1)) {
-      QRectF reward(pointAtTime(start, tp1, minPrice, maxPrice), pointAtTime(end, entry, minPrice, maxPrice));
-      p.fillRect(reward.normalized(), QColor(32, 201, 151, 60));
-    }
-    if (std::isfinite(sl)) {
-      QRectF danger(pointAtTime(start, entry, minPrice, maxPrice), pointAtTime(end, sl, minPrice, maxPrice));
-      p.fillRect(danger.normalized(), QColor(239, 95, 120, 62));
-    }
-    const QPointF a = pointAtTime(start, entry, minPrice, maxPrice);
-    const QPointF b = pointAtTime(end, entry, minPrice, maxPrice);
-    p.setPen(QPen(dark_ ? QColor(244, 239, 227, 225) : QColor(55, 65, 81, 245), 1));
-    p.drawLine(a, b);
-    p.drawText(b + QPointF(6, 4), "Entry");
-    if (markerVisible_) {
-      QPolygonF arrow;
-      arrow << QPointF(a.x(), a.y() - 10) << QPointF(a.x() - 5, a.y()) << QPointF(a.x() + 5, a.y());
-      p.setBrush(up());
-      p.setPen(Qt::NoPen);
-      p.drawPolygon(arrow);
-    }
-  }
-
-  struct PositionPartial {
-    qint64 time = 0;
-    double exitPrice = std::numeric_limits<double>::quiet_NaN();
-    double pnl = std::numeric_limits<double>::quiet_NaN();
-  };
-
-  struct PositionShape {
-    QString key;
-    QString direction;
-    qint64 entryTime = 0;
-    double entry = std::numeric_limits<double>::quiet_NaN();
-    double sl = std::numeric_limits<double>::quiet_NaN();
-    double tp1 = std::numeric_limits<double>::quiet_NaN();
-    double quantity = std::numeric_limits<double>::quiet_NaN();
-    QString signalType;
-    QString backgroundType;
-    QString backgroundDirection;
-    QVector<PositionPartial> partials;
-    bool opened = false;
-    bool closed = false;
-    qint64 closeTime = 0;
-    double exitPrice = std::numeric_limits<double>::quiet_NaN();
-    double totalPnl = std::numeric_limits<double>::quiet_NaN();
-  };
 
   QString positionKey(const QJsonObject &payload, qint64 entryTime) const {
     const qint64 positionId = static_cast<qint64>(payload.value("position_id").toDouble(0));
@@ -2586,7 +2639,7 @@ private:
     return QString("%1:%2").arg(direction).arg(entryTime);
   }
 
-  void drawPositions(QPainter &p, double minPrice, double maxPrice) {
+  QVector<PositionShape> collectPositionShapes() const {
     struct SentEntry {
       QString signalType;
       QString backgroundType;
@@ -2657,13 +2710,60 @@ private:
       }
     }
 
+    QVector<PositionShape> result;
+    result.reserve(positions.size());
     for (const PositionShape &position : std::as_const(positions)) {
       if (!position.opened) continue;
-      drawPositionShape(p, position, minPrice, maxPrice);
+      result.push_back(position);
+    }
+    return result;
+  }
+
+  void appendPositionsSceneNodes(QSGNode *root, double minPrice, double maxPrice) const {
+    for (const PositionShape &position : collectPositionShapes()) appendPositionShapeSceneNode(root, position, minPrice, maxPrice);
+  }
+
+  void drawPositions(QPainter &p, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
+    for (const PositionShape &position : collectPositionShapes()) {
+      drawPositionShape(p, position, minPrice, maxPrice, sceneGeometryAlreadyDrawn);
     }
   }
 
-  void drawPositionShape(QPainter &p, const PositionShape &position, double minPrice, double maxPrice) {
+  void appendPositionShapeSceneNode(QSGNode *root, const PositionShape &position, double minPrice, double maxPrice) const {
+    if (!std::isfinite(position.entry) || position.entryTime <= 0) return;
+    const bool isLong = position.direction == "LONG";
+    const qint64 end = position.closed && position.closeTime > 0 ? position.closeTime : ((candles_.isEmpty() ? position.entryTime : candles_.last().ms) + 5 * barIntervalMs());
+    const double entry = position.entry;
+    const double sl = position.sl;
+    double firstPartialExit = std::numeric_limits<double>::quiet_NaN();
+    if (!position.partials.isEmpty()) firstPartialExit = position.partials.first().exitPrice;
+    const double tp2 = std::isfinite(position.exitPrice) && (isLong ? position.exitPrice > entry : position.exitPrice < entry) ? position.exitPrice : std::numeric_limits<double>::quiet_NaN();
+    const double profitBoundary = std::isfinite(tp2) ? tp2 : firstPartialExit;
+    const bool hasTp1 = std::isfinite(firstPartialExit) && (isLong ? firstPartialExit > entry : firstPartialExit < entry);
+    const bool tp1BetterThanTp2 = hasTp1 && std::isfinite(position.exitPrice) && (isLong ? firstPartialExit > position.exitPrice : firstPartialExit < position.exitPrice);
+
+    if (std::isfinite(sl) && (isLong ? sl < entry : sl > entry)) {
+      appendPositionAreaSceneNode(root, position.entryTime, end, entry, sl, false, std::isfinite(position.totalPnl) && position.totalPnl < 0, minPrice, maxPrice);
+      appendPriceLineSegment(root, position.entryTime, end, sl, QColor(239, 95, 120, 225), minPrice, maxPrice);
+    }
+    if (std::isfinite(profitBoundary) && (isLong ? profitBoundary > entry : profitBoundary < entry)) {
+      appendPositionAreaSceneNode(root, position.entryTime, end, entry, profitBoundary, true, std::isfinite(position.totalPnl) && position.totalPnl >= 0, minPrice, maxPrice);
+    }
+    if (tp1BetterThanTp2) appendRangeAreaSceneNode(root, position.entryTime, end, firstPartialExit, position.exitPrice, QColor(148, 137, 121, 77), minPrice, maxPrice);
+    if (hasTp1) appendDashedLineSceneNode(root, QLineF(pointAtTime(position.entryTime, firstPartialExit, minPrice, maxPrice), pointAtTime(end, firstPartialExit, minPrice, maxPrice)), QColor(32, 201, 151, 210), 6.0, 4.0);
+    if (std::isfinite(tp2) && (!std::isfinite(firstPartialExit) || std::abs(tp2 - firstPartialExit) > 1e-9)) {
+      appendPriceLineSegment(root, position.entryTime, end, tp2, QColor(32, 201, 151, 242), minPrice, maxPrice);
+    }
+    appendPriceLineSegment(root, position.entryTime, end, entry, dark_ ? QColor(244, 239, 232, 225) : QColor(55, 65, 81, 245), minPrice, maxPrice);
+  }
+
+  void appendPositionAreaSceneNode(QSGNode *root, qint64 start, qint64 end, double entry, double boundary, bool profitable, bool emphasized, double minPrice, double maxPrice) const {
+    const int alpha = emphasized ? (profitable ? 138 : 133) : (profitable ? 66 : 61);
+    const QColor base = profitable ? QColor(32, 201, 151) : QColor(239, 95, 120);
+    appendRangeAreaSceneNode(root, start, end, entry, boundary, QColor(base.red(), base.green(), base.blue(), alpha), minPrice, maxPrice);
+  }
+
+  void drawPositionShape(QPainter &p, const PositionShape &position, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     if (!std::isfinite(position.entry) || position.entryTime <= 0) return;
     const bool isLong = position.direction == "LONG";
     qint64 end = position.closed && position.closeTime > 0 ? position.closeTime : ((candles_.isEmpty() ? position.entryTime : candles_.last().ms) + 5 * barIntervalMs());
@@ -2679,23 +2779,25 @@ private:
 
     if (std::isfinite(sl) && (isLong ? sl < entry : sl > entry)) {
       const bool emphasized = std::isfinite(position.totalPnl) && position.totalPnl < 0;
-      drawPositionArea(p, position.entryTime, end, entry, sl, false, emphasized, minPrice, maxPrice);
-      drawLineAt(p, position.entryTime, end, sl, QColor(239, 95, 120, 225), Qt::SolidLine, minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) {
+        drawPositionArea(p, position.entryTime, end, entry, sl, false, emphasized, minPrice, maxPrice);
+        drawLineAt(p, position.entryTime, end, sl, QColor(239, 95, 120, 225), Qt::SolidLine, minPrice, maxPrice);
+      }
     }
     if (std::isfinite(profitBoundary) && (isLong ? profitBoundary > entry : profitBoundary < entry)) {
       const bool emphasized = std::isfinite(position.totalPnl) && position.totalPnl >= 0;
-      drawPositionArea(p, position.entryTime, end, entry, profitBoundary, true, emphasized, minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) drawPositionArea(p, position.entryTime, end, entry, profitBoundary, true, emphasized, minPrice, maxPrice);
     }
     if (tp1BetterThanTp2) {
-      drawRangeArea(p, position.entryTime, end, firstPartialExit, position.exitPrice, QColor(148, 137, 121, 77), minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) drawRangeArea(p, position.entryTime, end, firstPartialExit, position.exitPrice, QColor(148, 137, 121, 77), minPrice, maxPrice);
     }
     if (hasTp1) {
-      drawLineAt(p, position.entryTime, end, firstPartialExit, QColor(32, 201, 151, 210), Qt::DashLine, minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) drawLineAt(p, position.entryTime, end, firstPartialExit, QColor(32, 201, 151, 210), Qt::DashLine, minPrice, maxPrice);
     }
     if (std::isfinite(tp2) && (!std::isfinite(firstPartialExit) || std::abs(tp2 - firstPartialExit) > 1e-9)) {
-      drawLineAt(p, position.entryTime, end, tp2, QColor(32, 201, 151, 242), Qt::SolidLine, minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) drawLineAt(p, position.entryTime, end, tp2, QColor(32, 201, 151, 242), Qt::SolidLine, minPrice, maxPrice);
     }
-    drawLineAt(p, position.entryTime, end, entry, dark_ ? QColor(244, 239, 232, 225) : QColor(55, 65, 81, 245), Qt::SolidLine, minPrice, maxPrice);
+    if (!sceneGeometryAlreadyDrawn) drawLineAt(p, position.entryTime, end, entry, dark_ ? QColor(244, 239, 232, 225) : QColor(55, 65, 81, 245), Qt::SolidLine, minPrice, maxPrice);
 
     if (markerVisible_) {
       const QString qty = std::isfinite(position.quantity) ? QString(" %1").arg(QString::number(position.quantity, 'g', 4)) : "";
@@ -2777,16 +2879,18 @@ private:
     p.drawText(pos + QPointF(8, 4), label);
   }
 
-  void paintReplayMarker(QPainter &p) {
+  void paintReplayMarker(QPainter &p, bool sceneLineAlreadyDrawn = false) {
     if (!replayMarkerActive_ || replayMarkerMs_ <= 0 || candles_.isEmpty()) return;
     const QRectF r = plotRect();
     const double idx = indexForTime(replayMarkerMs_);
     const double x = r.left() + (idx - visibleStart_ + 0.5) * barStep();
     if (x < r.left() - 2 || x > r.right() + 2) return;
     p.save();
-    QPen pen(Theme::cBrandBlue(), 1.4, Qt::DashLine);
-    p.setPen(pen);
-    p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+    if (!sceneLineAlreadyDrawn) {
+      QPen pen(Theme::cBrandBlue(), 1.4, Qt::DashLine);
+      p.setPen(pen);
+      p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+    }
     const QString label = QStringLiteral("回放起点");
     p.setFont(uiFont(10, QFont::DemiBold));
     const QFontMetrics fm(p.font());
@@ -2869,23 +2973,6 @@ private:
     }
     p.restore();
   }
-
-  struct PositionHitbox {
-    QRectF rect;
-    QString key;
-    QString direction;
-    qint64 startMs = 0;
-    qint64 endMs = 0;
-    double entryY = std::numeric_limits<double>::quiet_NaN();
-    double entry = std::numeric_limits<double>::quiet_NaN();
-    double sl = std::numeric_limits<double>::quiet_NaN();
-    double oneRtp = std::numeric_limits<double>::quiet_NaN();
-    QVector<double> targetRs;
-    double totalR = std::numeric_limits<double>::quiet_NaN();
-    double quantity = std::numeric_limits<double>::quiet_NaN();
-    QString remark;
-    QJsonObject copyData;
-  };
 
   double distanceToSegment(const QPointF &point, const QPointF &a, const QPointF &b) const {
     const double dx = b.x() - a.x();
@@ -3304,10 +3391,6 @@ private:
 
   QVector<Candle> candles_;
   QJsonArray overlayEvents_;
-  struct ParsedOverlayEvent {
-    QJsonObject event;
-    QJsonObject payload;
-  };
   QVector<ParsedOverlayEvent> parsedOverlayEvents_;
   QVector<OverlayLayer> parsedLayers_;
   QStringList layerGroupOrder_;
