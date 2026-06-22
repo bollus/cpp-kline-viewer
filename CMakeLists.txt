@@ -11,7 +11,9 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets Svg Qml Quick Qu
 
 # Ensure qt_add_qml_module places the module under the default import path
 # (qrc:/qt/qml/...) so its QML-file types are discoverable at runtime.
-qt_policy(SET QTP0001 NEW)
+if(COMMAND qt_policy)
+  qt_policy(SET QTP0001 NEW)
+endif()
 
 set(Q4J_UPDATE_REPO "" CACHE STRING "GitHub repository used by the in-app updater, for example owner/repo")
 set(Q4J_APP_VERSION "${PROJECT_VERSION}" CACHE STRING "Application version shown in the app and embedded in packages")
@@ -37,6 +39,8 @@ qt_add_executable(q4j_kline_viewer
   src/app/theme.hpp
   src/app/core.hpp
   src/app/chart_item.hpp
+  src/app/chart_overlay_types.hpp
+  src/app/chart_scene_renderer.hpp
   src/app/candle_client.hpp
   src/app/qml_support.hpp
   src/app/models.hpp

@@ -66,7 +66,20 @@ int main(int argc, char **argv) {
                    [] { qWarning("AlgoHub: failed to create Main.qml root object"); },
                    Qt::QueuedConnection);
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
   engine.loadFromModule("AlgoHub", "Main");
+#else
+  const QStringList qmlEntrypoints{
+    QStringLiteral(":/qt/qml/AlgoHub/Main.qml"),
+    QStringLiteral(":/AlgoHub/Main.qml"),
+    QStringLiteral(":/AlgoHub/qml/Main.qml")
+  };
+  for (const QString &entrypoint : qmlEntrypoints) {
+    if (!QFile::exists(entrypoint)) continue;
+    engine.load(QUrl(QStringLiteral("qrc%1").arg(entrypoint)));
+    break;
+  }
+#endif
   if (engine.rootObjects().isEmpty()) {
     qWarning("AlgoHub: QML engine produced no root objects");
     return -1;

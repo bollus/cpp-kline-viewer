@@ -1,12 +1,17 @@
 #pragma once
 
+#include "chart_overlay_types.hpp"
+#include "chart_scene_renderer.hpp"
 #include "core.hpp"
-#include <QQuickPaintedItem>
+#include <QQuickItem>
 #include <QQuickWindow>
+#include <QSGNode>
+#include <QSGSimpleTextureNode>
+#include <QSGTexture>
 #include <QCursor>
 #include <QtQml/qqmlregistration.h>
 
-class ChartItem : public QQuickPaintedItem {
+class ChartItem : public QQuickItem {
   Q_OBJECT
   QML_ELEMENT
 
@@ -23,7 +28,7 @@ public:
   };
   Q_ENUM(AnnotationTool)
 
-  explicit ChartItem(QQuickItem *parent = nullptr) : QQuickPaintedItem(parent) {
+  explicit ChartItem(QQuickItem *parent = nullptr) : QQuickItem(parent) {
     setAcceptedMouseButtons(Qt::AllButtons);
     setAcceptHoverEvents(true);
     setFlag(QQuickItem::ItemHasContents, true);
@@ -327,27 +332,72 @@ protected:
       event->accept();
       return;
     }
-    QQuickPaintedItem::keyPressEvent(event);
+    QQuickItem::keyPressEvent(event);
   }
 
-  void paint(QPainter *painter) override {
-    QPainter &p = *painter;
+  QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) override {
+    if (qRound(width()) <= 0 || qRound(height()) <= 0 || !window()) {
+      delete oldNode;
+      return nullptr;
+    }
+
+    delete oldNode;
+    auto *root = new QSGNode;
+
+    root->appendChildNode(q4j::chart_scene::createRectNode(boundingRect(), bg()));
+
+    if (!(candles_.isEmpty() && !messageText_.isEmpty())) {
+      double minPrice, maxPrice;
+      visibleRange(minPrice, maxPrice);
+      auto *plotClip = new QSGClipNode;
+      plotClip->setClipRect(plotRect());
+      plotClip->setIsRectangular(true);
+      root->appendChildNode(plotClip);
+      appendGridSceneNodes(plotClip);
+      appendCandleSceneNodes(plotClip, minPrice, maxPrice);
+      appendGenericLayerSceneNodes(plotClip, minPrice, maxPrice);
+      appendIndicatorSceneNodes(plotClip, minPrice, maxPrice);
+      appendManualAnnotationSceneNodes(plotClip, minPrice, maxPrice);
+      appendLatestPriceSceneNodes(plotClip, minPrice, maxPrice);
+    }
+
+    const qreal dpr = window()->devicePixelRatio();
+    const QSize pixelSize(qMax(1, qCeil(width() * dpr)), qMax(1, qCeil(height() * dpr)));
+    QImage image(pixelSize, QImage::Format_RGBA8888_Premultiplied);
+    image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    painter.scale(dpr, dpr);
+    renderChart(painter, true);
+    painter.end();
+
+    auto *node = new QSGSimpleTextureNode;
+    node->setOwnsTexture(true);
+    QSGTexture *texture = window()->createTextureFromImage(image);
+    node->setTexture(texture);
+    node->setRect(boundingRect());
+    root->appendChildNode(node);
+    return root;
+  }
+
+  void renderChart(QPainter &p, bool scenePrimitivesAlreadyDrawn = false) {
     p.setRenderHint(QPainter::Antialiasing, false);
     p.setRenderHint(QPainter::TextAntialiasing, true);
-    paintBackground(p);
+    if (scenePrimitivesAlreadyDrawn) paintChartFrame(p);
+    else paintBackground(p);
     if (candles_.isEmpty() && !messageText_.isEmpty()) {
       paintChartMessage(p);
       return;
     }
     double minPrice, maxPrice;
     visibleRange(minPrice, maxPrice);
-    paintGrid(p, minPrice, maxPrice);
-    paintCandles(p);
+    paintGrid(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
+    if (!scenePrimitivesAlreadyDrawn) paintCandles(p);
     paintReplayMarker(p);
-    paintOverlays(p, minPrice, maxPrice);
-    paintIndicators(p, minPrice, maxPrice);
-    paintManualAnnotations(p, minPrice, maxPrice);
-    paintLatestPriceLine(p, minPrice, maxPrice);
+    paintOverlays(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
+    paintIndicators(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
+    paintManualAnnotations(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
+    paintLatestPriceLine(p, minPrice, maxPrice, scenePrimitivesAlreadyDrawn);
     paintLayerHints(p);
     paintCrosshair(p);
     paintPositionTooltip(p);
@@ -425,7 +475,7 @@ protected:
   }
 
   void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override {
-    QQuickPaintedItem::geometryChange(newGeometry, oldGeometry);
+    QQuickItem::geometryChange(newGeometry, oldGeometry);
     syncAnnotationStyleToolbar();
   }
 
@@ -655,8 +705,250 @@ private:
     return visibleStart_ + (x - plotRect().left()) / std::max(0.05, barStep()) - 0.5;
   }
 
+  void appendGridSceneNodes(QSGNode *root) const {
+    const QRectF r = plotRect();
+    QVector<QLineF> gridLines;
+    gridLines.reserve(21);
+    for (int i = 0; i <= 10; ++i) {
+      const double y = r.top() + r.height() * i / 10.0;
+      gridLines.push_back(QLineF(QPointF(r.left(), y), QPointF(r.right(), y)));
+    }
+    for (int i = 0; i <= 8; ++i) {
+      const double x = r.left() + r.width() * i / 8.0;
+      gridLines.push_back(QLineF(QPointF(x, r.top()), QPointF(x, r.bottom())));
+    }
+    if (auto *node = q4j::chart_scene::createLineBatchNode(gridLines, grid())) root->appendChildNode(node);
+
+    QVector<QLineF> axes;
+    axes.push_back(QLineF(r.topRight(), r.bottomRight()));
+    axes.push_back(QLineF(r.bottomLeft(), r.bottomRight()));
+    const QColor axisColor = dark_ ? QColor(148, 137, 121, 170) : QColor(190, 201, 218, 230);
+    if (auto *node = q4j::chart_scene::createLineBatchNode(axes, axisColor)) root->appendChildNode(node);
+  }
+
+  void appendLatestPriceSceneNodes(QSGNode *root, double minPrice, double maxPrice) const {
+    if (candles_.isEmpty()) return;
+    const Candle &latest = candles_.last();
+    const QRectF r = plotRect();
+    const double y = yFor(latest.close, minPrice, maxPrice);
+    const QColor base = latest.close >= latest.open ? up() : down();
+    QColor color(base.red(), base.green(), base.blue(), 185);
+    appendDashedLineSceneNode(root, QLineF(QPointF(r.left(), y), QPointF(r.right(), y)), color, 6.0, 5.0);
+  }
+
+  void appendDashedLineSceneNode(QSGNode *root, const QLineF &line, const QColor &color, double dash, double gap) const {
+    QVector<QLineF> dashes;
+    const double length = line.length();
+    if (length <= 0.0) return;
+    const QPointF unit((line.x2() - line.x1()) / length, (line.y2() - line.y1()) / length);
+    for (double distance = 0.0; distance < length; distance += dash + gap) {
+      const double end = std::min(distance + dash, length);
+      const QPointF a(line.x1() + unit.x() * distance, line.y1() + unit.y() * distance);
+      const QPointF b(line.x1() + unit.x() * end, line.y1() + unit.y() * end);
+      dashes.push_back(QLineF(a, b));
+    }
+    if (auto *node = q4j::chart_scene::createLineBatchNode(dashes, color)) {
+      root->appendChildNode(node);
+    }
+  }
+
+  void appendGenericLayerSceneNodes(QSGNode *root, double minPrice, double maxPrice) const {
+    if (candles_.isEmpty() || parsedLayers_.isEmpty()) return;
+    for (const OverlayLayer &layer : parsedLayers_) {
+      if (!layerGroupEnabled(layer) || !layerVisibleInTime(layer)) continue;
+      if (layer.type == "line" || layer.type == "ray" || layer.type == "polyline") {
+        appendGenericLineSceneNode(root, layer, minPrice, maxPrice);
+      } else if (layer.type == "box" || layer.type == "range") {
+        appendGenericBoxSceneNode(root, layer, minPrice, maxPrice);
+      } else if (layer.type == "priceline") {
+        appendGenericPriceLineSceneNode(root, layer, minPrice, maxPrice);
+      } else if (layer.type == "position") {
+        appendGenericPositionSceneNode(root, layer, minPrice, maxPrice);
+      }
+    }
+  }
+
+  void appendIndicatorSceneNodes(QSGNode *root, double minPrice, double maxPrice) const {
+    if (candles_.isEmpty()) return;
+    const int start = std::max(0, static_cast<int>(std::floor(visibleStart_)) - 2);
+    const int end = std::min(candleCount(), static_cast<int>(std::ceil(visibleStart_ + visibleCount_)) + 2);
+
+    for (const IndicatorBox &boxShape : indicatorEngine_.boxes()) {
+      if (boxShape.to < start || boxShape.from >= end) continue;
+      const int from = std::clamp(boxShape.from, 0, candleCount() - 1);
+      const int to = std::clamp(boxShape.to, 0, candleCount() - 1);
+      const QRectF rect = QRectF(pointAtIndex(from, boxShape.top, minPrice, maxPrice),
+                                 pointAtIndex(to, boxShape.bottom, minPrice, maxPrice)).normalized();
+      if (auto *fill = q4j::chart_scene::createRectNode(rect, boxShape.fill)) root->appendChildNode(fill);
+      appendRectBorderSceneNode(root, rect, boxShape.border);
+    }
+
+    for (const IndicatorLine &lineShape : indicatorEngine_.lines()) {
+      if (lineShape.to < start || lineShape.from >= end) continue;
+      QVector<QLineF> lines;
+      lines.push_back(QLineF(pointAtIndex(lineShape.from, lineShape.y1, minPrice, maxPrice),
+                             pointAtIndex(lineShape.to, lineShape.y2, minPrice, maxPrice)));
+      if (auto *node = q4j::chart_scene::createLineBatchNode(lines, lineShape.color)) root->appendChildNode(node);
+    }
+
+    for (const IndicatorPlot &plot : indicatorEngine_.plots()) {
+      QVector<QLineF> segments;
+      QPointF previous;
+      bool hasPrevious = false;
+      for (int i = start; i < end && i < plot.values.size(); ++i) {
+        const double value = plot.values[i];
+        if (!std::isfinite(value)) {
+          hasPrevious = false;
+          continue;
+        }
+        const QPointF current = pointAtIndex(i, value, minPrice, maxPrice);
+        if (hasPrevious) segments.push_back(QLineF(previous, current));
+        previous = current;
+        hasPrevious = true;
+      }
+      if (auto *node = q4j::chart_scene::createLineBatchNode(segments, plot.color)) root->appendChildNode(node);
+    }
+  }
+
+  void appendGenericLineSceneNode(QSGNode *root, const OverlayLayer &layer, double minPrice, double maxPrice) const {
+    if (layer.points.size() < 2) return;
+    QVector<QLineF> segments;
+    segments.reserve(layer.points.size() - 1);
+    QPointF previous = pointAtTime(layer.points.first().time, layer.points.first().price, minPrice, maxPrice);
+    for (int i = 1; i < layer.points.size(); ++i) {
+      const QPointF current = pointAtTime(layer.points[i].time, layer.points[i].price, minPrice, maxPrice);
+      segments.push_back(QLineF(previous, current));
+      previous = current;
+    }
+    const bool emphasized = hoveredLineLayerId_ == layer.id || selectedLineLayerIds_.contains(layer.id);
+    const QColor color = withOpacity(layer.style.stroke, emphasized ? 1.0 : layer.style.strokeOpacity);
+    if (auto *node = q4j::chart_scene::createLineBatchNode(segments, color)) root->appendChildNode(node);
+  }
+
+  void appendGenericBoxSceneNode(QSGNode *root, const OverlayLayer &layer, double minPrice, double maxPrice) const {
+    const qint64 from = layer.from > 0 ? layer.from : (layer.points.isEmpty() ? 0 : layer.points.first().time);
+    const qint64 to = layer.to > 0 ? layer.to : (layer.points.size() > 1 ? layer.points.last().time : candles_.last().ms);
+    double top = layer.top;
+    double bottom = layer.bottom;
+    if ((!std::isfinite(top) || !std::isfinite(bottom)) && layer.type == "range" && std::isfinite(layer.price)) {
+      top = layer.price;
+      bottom = layer.price;
+    }
+    if (from <= 0 || to <= 0 || !std::isfinite(top) || !std::isfinite(bottom)) return;
+    if (std::abs(top - bottom) < 1e-9) {
+      appendPriceLineSegment(root, from, to, top, withOpacity(layer.style.stroke, layer.style.strokeOpacity), minPrice, maxPrice);
+      return;
+    }
+    const QRectF rect = QRectF(pointAtTime(from, top, minPrice, maxPrice), pointAtTime(to, bottom, minPrice, maxPrice)).normalized();
+    if (auto *fill = q4j::chart_scene::createRectNode(rect, withOpacity(layer.style.fill, layer.style.fillOpacity))) root->appendChildNode(fill);
+    appendRectBorderSceneNode(root, rect, withOpacity(layer.style.stroke, layer.style.strokeOpacity));
+  }
+
+  void appendGenericPriceLineSceneNode(QSGNode *root, const OverlayLayer &layer, double minPrice, double maxPrice) const {
+    if (!std::isfinite(layer.price)) return;
+    const qint64 from = layer.from > 0 ? layer.from : candles_.first().ms;
+    const qint64 to = layer.to > 0 ? layer.to : candles_.last().ms + 10 * barIntervalMs();
+    appendPriceLineSegment(root, from, to, layer.price, withOpacity(layer.style.stroke, layer.style.strokeOpacity), minPrice, maxPrice);
+  }
+
+  void appendGenericPositionSceneNode(QSGNode *root, const OverlayLayer &layer, double minPrice, double maxPrice) const {
+    const qint64 start = layer.entryTime > 0 ? layer.entryTime : layer.from;
+    const qint64 end = layer.exitTime > 0 ? layer.exitTime : (layer.to > 0 ? layer.to : candles_.last().ms + 5 * barIntervalMs());
+    if (start <= 0 || end <= 0 || !std::isfinite(layer.entry)) return;
+    const bool isLong = layer.side != "short";
+    const double entry = layer.entry;
+    const double sl = layer.sl;
+    if (std::isfinite(sl) && (isLong ? sl < entry : sl > entry)) {
+      appendRangeAreaSceneNode(root, start, end, entry, sl, withOpacity(layer.style.lossFill, layer.style.fillOpacity), minPrice, maxPrice);
+      appendPriceLineSegment(root, start, end, sl, withOpacity(layer.style.slLine, 0.95), minPrice, maxPrice);
+    }
+    double rewardBoundary = std::numeric_limits<double>::quiet_NaN();
+    for (const double tp : layer.tps) {
+      if (!std::isfinite(tp) || !(isLong ? tp > entry : tp < entry)) continue;
+      if (!std::isfinite(rewardBoundary) || std::abs(tp - entry) > std::abs(rewardBoundary - entry)) rewardBoundary = tp;
+    }
+    if (std::isfinite(rewardBoundary) && (isLong ? rewardBoundary > entry : rewardBoundary < entry)) {
+      appendRangeAreaSceneNode(root, start, end, entry, rewardBoundary, withOpacity(layer.style.profitFill, layer.style.fillOpacity), minPrice, maxPrice);
+    }
+    for (const double tp : layer.tps) {
+      if (std::isfinite(tp)) appendPriceLineSegment(root, start, end, tp, withOpacity(layer.style.tpLine, 0.9), minPrice, maxPrice);
+    }
+    appendPriceLineSegment(root, start, end, entry, withOpacity(layer.style.entryLine, 0.96), minPrice, maxPrice);
+  }
+
+  void appendRectBorderSceneNode(QSGNode *root, const QRectF &rect, const QColor &color) const {
+    QVector<QLineF> lines;
+    lines.reserve(4);
+    lines.push_back(QLineF(rect.topLeft(), rect.topRight()));
+    lines.push_back(QLineF(rect.topRight(), rect.bottomRight()));
+    lines.push_back(QLineF(rect.bottomRight(), rect.bottomLeft()));
+    lines.push_back(QLineF(rect.bottomLeft(), rect.topLeft()));
+    if (auto *node = q4j::chart_scene::createLineBatchNode(lines, color)) root->appendChildNode(node);
+  }
+
+  void appendPriceLineSegment(QSGNode *root, qint64 start, qint64 end, double price, const QColor &color, double minPrice, double maxPrice) const {
+    if (start <= 0 || end <= 0 || !std::isfinite(price)) return;
+    if (auto *node = q4j::chart_scene::createLineBatchNode({QLineF(pointAtTime(start, price, minPrice, maxPrice),
+                                                                   pointAtTime(end, price, minPrice, maxPrice))}, color)) {
+      root->appendChildNode(node);
+    }
+  }
+
+  void appendRangeAreaSceneNode(QSGNode *root, qint64 start, qint64 end, double a, double b, const QColor &fill, double minPrice, double maxPrice) const {
+    const QRectF area = QRectF(pointAtTime(start, a, minPrice, maxPrice), pointAtTime(end, b, minPrice, maxPrice)).normalized();
+    if (auto *node = q4j::chart_scene::createRectNode(area, fill)) root->appendChildNode(node);
+  }
+
+  void appendCandleSceneNodes(QSGNode *root, double minPrice, double maxPrice) const {
+    if (candles_.isEmpty()) return;
+    const QRectF r = plotRect();
+    const double step = barStep();
+    const double bodyWidth = std::min(std::max(1.0, step * 0.72), std::max(1.0, step - 2.0));
+    const int start = std::max(0, static_cast<int>(std::floor(visibleStart_)) - 1);
+    const int end = std::min(candleCount(), static_cast<int>(std::ceil(visibleStart_ + visibleCount_)) + 1);
+
+    QVector<QLineF> upWicks;
+    QVector<QLineF> downWicks;
+    QVector<QRectF> upBodies;
+    QVector<QRectF> downBodies;
+    upWicks.reserve(end - start);
+    downWicks.reserve(end - start);
+    upBodies.reserve(end - start);
+    downBodies.reserve(end - start);
+
+    for (int i = start; i < end; ++i) {
+      const Candle &c = candles_[i];
+      const double x = r.left() + (i - visibleStart_ + 0.5) * step;
+      if (x < r.left() - bodyWidth || x > r.right() + bodyWidth) continue;
+      const double yHigh = yFor(c.high, minPrice, maxPrice);
+      const double yLow = yFor(c.low, minPrice, maxPrice);
+      const double yOpen = yFor(c.open, minPrice, maxPrice);
+      const double yClose = yFor(c.close, minPrice, maxPrice);
+      QRectF body(x - bodyWidth / 2.0, std::min(yOpen, yClose), bodyWidth, std::max(1.0, std::abs(yClose - yOpen)));
+      body = body.intersected(r.adjusted(-bodyWidth, 0, bodyWidth, 0));
+      const QLineF wick(QPointF(x, std::clamp(yHigh, r.top(), r.bottom())),
+                        QPointF(x, std::clamp(yLow, r.top(), r.bottom())));
+      if (c.close >= c.open) {
+        upWicks.push_back(wick);
+        upBodies.push_back(body);
+      } else {
+        downWicks.push_back(wick);
+        downBodies.push_back(body);
+      }
+    }
+
+    if (auto *node = q4j::chart_scene::createLineBatchNode(upWicks, up())) root->appendChildNode(node);
+    if (auto *node = q4j::chart_scene::createLineBatchNode(downWicks, down())) root->appendChildNode(node);
+    if (auto *node = q4j::chart_scene::createRectBatchNode(upBodies, up())) root->appendChildNode(node);
+    if (auto *node = q4j::chart_scene::createRectBatchNode(downBodies, down())) root->appendChildNode(node);
+  }
+
   void paintBackground(QPainter &p) {
     p.fillRect(rect(), bg());
+    paintChartFrame(p);
+  }
+
+  void paintChartFrame(QPainter &p) {
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setPen(QPen(dark_ ? QColor(148, 137, 121, 135) : QColor(203, 213, 225, 220), 1));
     p.setBrush(Qt::NoBrush);
@@ -690,33 +982,35 @@ private:
     p.drawText(box.adjusted(18, 46, -18, -16), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, messageText_);
   }
 
-  void paintGrid(QPainter &p, double minPrice, double maxPrice) {
+  void paintGrid(QPainter &p, double minPrice, double maxPrice, bool sceneLinesAlreadyDrawn = false) {
     const QRectF r = plotRect();
-    p.setPen(QPen(grid(), 1));
     p.setFont(numberFont(12, QFont::Medium));
     const int yTicks = 10;
+    if (!sceneLinesAlreadyDrawn) p.setPen(QPen(grid(), 1));
     for (int i = 0; i <= yTicks; ++i) {
       const double y = r.top() + r.height() * i / yTicks;
-      p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+      if (!sceneLinesAlreadyDrawn) p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
       const double price = maxPrice - (maxPrice - minPrice) * i / yTicks;
       p.setPen(muted());
       p.drawText(QRectF(r.right() + 8, y - 9, 66, 18), Qt::AlignVCenter | Qt::AlignLeft, QString::number(price, 'f', price > 100 ? 0 : 2));
-      p.setPen(QPen(grid(), 1));
+      if (!sceneLinesAlreadyDrawn) p.setPen(QPen(grid(), 1));
     }
     for (int i = 0; i <= 8; ++i) {
       const double x = r.left() + r.width() * i / 8.0;
-      p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+      if (!sceneLinesAlreadyDrawn) p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
       const int candleIndex = static_cast<int>(std::round(visibleStart_ + (visibleCount_ - 1) * i / 8.0));
       if (candleIndex >= 0 && candleIndex < candleCount()) {
         const QString label = formatChartTime(candles_[candleIndex].ms, "MM-dd HH:mm");
         p.setPen(muted());
         p.drawText(QRectF(x - 48, r.bottom() + 8, 96, 18), Qt::AlignCenter, label);
-        p.setPen(QPen(grid(), 1));
+        if (!sceneLinesAlreadyDrawn) p.setPen(QPen(grid(), 1));
       }
     }
-    p.setPen(QPen(dark_ ? QColor(148, 137, 121, 170) : QColor(190, 201, 218, 230), 1));
-    p.drawLine(r.topRight(), r.bottomRight());
-    p.drawLine(r.bottomLeft(), r.bottomRight());
+    if (!sceneLinesAlreadyDrawn) {
+      p.setPen(QPen(dark_ ? QColor(148, 137, 121, 170) : QColor(190, 201, 218, 230), 1));
+      p.drawLine(r.topRight(), r.bottomRight());
+      p.drawLine(r.bottomLeft(), r.bottomRight());
+    }
   }
 
   void paintCandles(QPainter &p) {
@@ -747,62 +1041,6 @@ private:
     p.restore();
   }
 
-  struct OverlayPoint {
-    qint64 time = 0;
-    double price = std::numeric_limits<double>::quiet_NaN();
-  };
-
-  struct OverlayStyle {
-    QColor stroke;
-    QColor fill;
-    QColor textColor;
-    QColor profitFill;
-    QColor lossFill;
-    QColor entryLine;
-    QColor slLine;
-    QColor tpLine;
-    int strokeWidth = 1;
-    double strokeOpacity = 1.0;
-    double fillOpacity = 0.35;
-    QVector<qreal> dash;
-    int fontSize = 10;
-  };
-
-  struct OverlayLayer {
-    QString id;
-    QString type;
-    QString group;
-    bool visible = true;
-    int zIndex = 0;
-    QVector<OverlayPoint> points;
-    qint64 from = 0;
-    qint64 to = 0;
-    qint64 entryTime = 0;
-    qint64 exitTime = 0;
-    double price = std::numeric_limits<double>::quiet_NaN();
-    double top = std::numeric_limits<double>::quiet_NaN();
-    double bottom = std::numeric_limits<double>::quiet_NaN();
-    double entry = std::numeric_limits<double>::quiet_NaN();
-    double sl = std::numeric_limits<double>::quiet_NaN();
-    double quantity = std::numeric_limits<double>::quiet_NaN();
-    double amount = std::numeric_limits<double>::quiet_NaN();
-    double totalR = std::numeric_limits<double>::quiet_NaN();
-    QVector<double> tps;
-    QString side;
-    QString shape;
-    QString text;
-    QString anchor;
-    QString remark;
-    QJsonObject data;
-    OverlayStyle style;
-  };
-
-  struct LineLayerHitbox {
-    QString id;
-    int zIndex = 0;
-    QPolygonF points;
-  };
-
   bool layerGroupEnabled(const OverlayLayer &layer) const {
     return layer.visible && layerGroupVisible_.value(layer.group, true);
   }
@@ -827,16 +1065,16 @@ private:
     return timeWindowVisible(start, end);
   }
 
-  void paintGenericLayers(QPainter &p, double minPrice, double maxPrice) {
+  void paintGenericLayers(QPainter &p, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     p.setRenderHint(QPainter::Antialiasing, true);
     for (const OverlayLayer &layer : parsedLayers_) {
       if (!layerGroupEnabled(layer) || !layerVisibleInTime(layer)) continue;
-      if (layer.type == "line" || layer.type == "ray" || layer.type == "polyline") drawGenericLineLayer(p, layer, minPrice, maxPrice);
-      else if (layer.type == "box" || layer.type == "range") drawGenericBoxLayer(p, layer, minPrice, maxPrice);
-      else if (layer.type == "position") drawGenericPositionLayer(p, layer, minPrice, maxPrice);
+      if (layer.type == "line" || layer.type == "ray" || layer.type == "polyline") drawGenericLineLayer(p, layer, minPrice, maxPrice, sceneGeometryAlreadyDrawn);
+      else if (layer.type == "box" || layer.type == "range") drawGenericBoxLayer(p, layer, minPrice, maxPrice, sceneGeometryAlreadyDrawn);
+      else if (layer.type == "position") drawGenericPositionLayer(p, layer, minPrice, maxPrice, sceneGeometryAlreadyDrawn);
       else if (layer.type == "label") drawGenericLabelLayer(p, layer, minPrice, maxPrice);
       else if (layer.type == "marker") drawGenericMarkerLayer(p, layer, minPrice, maxPrice);
-      else if (layer.type == "priceline") drawGenericPriceLineLayer(p, layer, minPrice, maxPrice);
+      else if (layer.type == "priceline") drawGenericPriceLineLayer(p, layer, minPrice, maxPrice, sceneGeometryAlreadyDrawn);
     }
   }
 
@@ -891,13 +1129,15 @@ private:
     lineLayerHitboxes_.push_back(hitbox);
   }
 
-  void drawGenericLineLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+  void drawGenericLineLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     if (layer.points.size() < 2) return;
     QPolygonF points;
     for (const OverlayPoint &point : layer.points) points << pointAtTime(point.time, point.price, minPrice, maxPrice);
     const bool emphasized = hoveredLineLayerId_ == layer.id || selectedLineLayerIds_.contains(layer.id);
-    p.setPen(emphasized ? highlightedLinePen(layer.style) : layerPen(layer.style));
-    p.drawPolyline(points);
+    if (!sceneGeometryAlreadyDrawn) {
+      p.setPen(emphasized ? highlightedLinePen(layer.style) : layerPen(layer.style));
+      p.drawPolyline(points);
+    }
     registerLineLayerHitbox(layer, points);
     if (!layer.text.isEmpty()) {
       p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
@@ -907,7 +1147,7 @@ private:
     if (emphasized) drawLinePointPriceLabels(p, layer, points);
   }
 
-  void drawGenericBoxLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+  void drawGenericBoxLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     const qint64 from = layer.from > 0 ? layer.from : (layer.points.isEmpty() ? 0 : layer.points.first().time);
     const qint64 to = layer.to > 0 ? layer.to : (layer.points.size() > 1 ? layer.points.last().time : candles_.last().ms);
     double top = layer.top;
@@ -918,14 +1158,18 @@ private:
     }
     if (from <= 0 || to <= 0 || !std::isfinite(top) || !std::isfinite(bottom)) return;
     if (std::abs(top - bottom) < 1e-9) {
-      drawLineAt(p, from, to, top, withOpacity(layer.style.stroke, layer.style.strokeOpacity), layer.style.dash.isEmpty() ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) {
+        drawLineAt(p, from, to, top, withOpacity(layer.style.stroke, layer.style.strokeOpacity), layer.style.dash.isEmpty() ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
+      }
     } else {
       QRectF rect(pointAtTime(from, top, minPrice, maxPrice), pointAtTime(to, bottom, minPrice, maxPrice));
       rect = rect.normalized();
-      p.fillRect(rect, withOpacity(layer.style.fill, layer.style.fillOpacity));
-      p.setBrush(Qt::NoBrush);
-      p.setPen(layerPen(layer.style));
-      p.drawRect(rect);
+      if (!sceneGeometryAlreadyDrawn) {
+        p.fillRect(rect, withOpacity(layer.style.fill, layer.style.fillOpacity));
+        p.setBrush(Qt::NoBrush);
+        p.setPen(layerPen(layer.style));
+        p.drawRect(rect);
+      }
       const QString text = layer.text.isEmpty() ? layer.group : layer.text;
       if (!text.isEmpty()) {
         p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
@@ -935,11 +1179,13 @@ private:
     }
   }
 
-  void drawGenericPriceLineLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+  void drawGenericPriceLineLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     if (!std::isfinite(layer.price)) return;
     const qint64 from = layer.from > 0 ? layer.from : candles_.first().ms;
     const qint64 to = layer.to > 0 ? layer.to : candles_.last().ms + 10 * barIntervalMs();
-    drawLineAt(p, from, to, layer.price, withOpacity(layer.style.stroke, layer.style.strokeOpacity), layer.style.dash.isEmpty() ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
+    if (!sceneGeometryAlreadyDrawn) {
+      drawLineAt(p, from, to, layer.price, withOpacity(layer.style.stroke, layer.style.strokeOpacity), layer.style.dash.isEmpty() ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
+    }
     if (!layer.text.isEmpty()) {
       p.setFont(uiFont(layer.style.fontSize, QFont::DemiBold));
       p.setPen(withOpacity(layer.style.textColor, 1.0));
@@ -992,7 +1238,7 @@ private:
     }
   }
 
-  void drawGenericPositionLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice) {
+  void drawGenericPositionLayer(QPainter &p, const OverlayLayer &layer, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     const qint64 start = layer.entryTime > 0 ? layer.entryTime : layer.from;
     const qint64 end = layer.exitTime > 0 ? layer.exitTime : (layer.to > 0 ? layer.to : candles_.last().ms + 5 * barIntervalMs());
     if (start <= 0 || end <= 0 || !std::isfinite(layer.entry)) return;
@@ -1000,8 +1246,10 @@ private:
     const double entry = layer.entry;
     const double sl = layer.sl;
     if (std::isfinite(sl) && (isLong ? sl < entry : sl > entry)) {
-      drawRangeArea(p, start, end, entry, sl, withOpacity(layer.style.lossFill, layer.style.fillOpacity), minPrice, maxPrice);
-      drawLineAt(p, start, end, sl, withOpacity(layer.style.slLine, 0.95), Qt::SolidLine, minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) {
+        drawRangeArea(p, start, end, entry, sl, withOpacity(layer.style.lossFill, layer.style.fillOpacity), minPrice, maxPrice);
+        drawLineAt(p, start, end, sl, withOpacity(layer.style.slLine, 0.95), Qt::SolidLine, minPrice, maxPrice);
+      }
     }
     double rewardBoundary = std::numeric_limits<double>::quiet_NaN();
     for (const double tp : layer.tps) {
@@ -1009,15 +1257,17 @@ private:
       if (!std::isfinite(rewardBoundary) || std::abs(tp - entry) > std::abs(rewardBoundary - entry)) rewardBoundary = tp;
     }
     if (std::isfinite(rewardBoundary) && (isLong ? rewardBoundary > entry : rewardBoundary < entry)) {
-      drawRangeArea(p, start, end, entry, rewardBoundary, withOpacity(layer.style.profitFill, layer.style.fillOpacity), minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) drawRangeArea(p, start, end, entry, rewardBoundary, withOpacity(layer.style.profitFill, layer.style.fillOpacity), minPrice, maxPrice);
     }
     for (int i = 0; i < layer.tps.size(); ++i) {
       const double tp = layer.tps[i];
       if (!std::isfinite(tp)) continue;
       const bool last = i == layer.tps.size() - 1;
-      drawLineAt(p, start, end, tp, withOpacity(layer.style.tpLine, last ? 0.95 : 0.82), last ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
+      if (!sceneGeometryAlreadyDrawn) {
+        drawLineAt(p, start, end, tp, withOpacity(layer.style.tpLine, last ? 0.95 : 0.82), last ? Qt::SolidLine : Qt::DashLine, minPrice, maxPrice);
+      }
     }
-    drawLineAt(p, start, end, entry, withOpacity(layer.style.entryLine, 0.96), Qt::SolidLine, minPrice, maxPrice);
+    if (!sceneGeometryAlreadyDrawn) drawLineAt(p, start, end, entry, withOpacity(layer.style.entryLine, 0.96), Qt::SolidLine, minPrice, maxPrice);
     const QString label = layer.text.isEmpty() ? (isLong ? "L" : "S") : layer.text;
     drawBadgeMarker(p, start, entry, isLong, isLong ? up() : down(), label, minPrice, maxPrice);
     registerGenericPositionHitbox(layer, start, end, minPrice, maxPrice);
@@ -1244,7 +1494,7 @@ private:
     return dark_ ? QColor(223, 208, 184, 220) : QColor(0, 143, 130, 230);
   }
 
-  void drawManualAnnotation(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice, bool draft = false, bool selected = false) {
+  void drawManualAnnotation(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice, bool draft = false, bool selected = false, bool sceneGeometryAlreadyDrawn = false) {
     if (annotation.points.isEmpty()) return;
     const QRectF r = plotRect();
     QColor color = annotationColor(annotation);
@@ -1257,23 +1507,31 @@ private:
     p.setRenderHint(QPainter::Antialiasing, true);
     if (annotation.tool == AnnotationTool::HorizontalLine) {
       const double y = yFor(annotation.points[0].price, minPrice, maxPrice);
-      p.setPen(QPen(lineColor, lineWidth));
-      p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+      if (!sceneGeometryAlreadyDrawn) {
+        p.setPen(QPen(lineColor, lineWidth));
+        p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+      }
     } else if (annotation.tool == AnnotationTool::VerticalLine) {
       const double x = pointAtIndex(annotation.points[0].index, annotation.points[0].price, minPrice, maxPrice).x();
-      p.setPen(QPen(lineColor, lineWidth));
-      p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+      if (!sceneGeometryAlreadyDrawn) {
+        p.setPen(QPen(lineColor, lineWidth));
+        p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+      }
     } else if (annotation.tool == AnnotationTool::SegmentLine && annotation.points.size() >= 2) {
-      p.setPen(QPen(lineColor, lineWidth));
-      p.drawLine(annotationPoint(annotation.points[0], minPrice, maxPrice), annotationPoint(annotation.points[1], minPrice, maxPrice));
+      if (!sceneGeometryAlreadyDrawn) {
+        p.setPen(QPen(lineColor, lineWidth));
+        p.drawLine(annotationPoint(annotation.points[0], minPrice, maxPrice), annotationPoint(annotation.points[1], minPrice, maxPrice));
+      }
     } else if (annotation.tool == AnnotationTool::Polyline && annotation.points.size() >= 2) {
       QPolygonF polyline;
       for (const AnnotationPoint &point : annotation.points) polyline << annotationPoint(point, minPrice, maxPrice);
-      p.setPen(QPen(lineColor, lineWidth));
-      p.drawPolyline(polyline);
+      if (!sceneGeometryAlreadyDrawn) {
+        p.setPen(QPen(lineColor, lineWidth));
+        p.drawPolyline(polyline);
+      }
     } else if ((annotation.tool == AnnotationTool::Rectangle || annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) && annotation.points.size() >= 2) {
       if ((annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock) && annotation.points.size() >= 3) {
-        drawPositionAnnotation(p, annotation, minPrice, maxPrice, lineColor, draft, selected);
+        drawPositionAnnotation(p, annotation, minPrice, maxPrice, lineColor, draft, selected, sceneGeometryAlreadyDrawn);
         p.restore();
         return;
       }
@@ -1281,9 +1539,11 @@ private:
       const bool block = annotation.tool == AnnotationTool::LongBlock || annotation.tool == AnnotationTool::ShortBlock;
       QColor fill = annotation.style.fill.isValid() ? annotation.style.fill : color;
       fill.setAlpha(annotation.style.opacity);
-      p.setPen(QPen(lineColor, lineWidth));
-      p.setBrush(block ? fill : Qt::NoBrush);
-      p.drawRect(box);
+      if (!sceneGeometryAlreadyDrawn) {
+        p.setPen(QPen(lineColor, lineWidth));
+        p.setBrush(block ? fill : Qt::NoBrush);
+        p.drawRect(box);
+      }
       if (block) {
         p.setPen(lineColor);
         p.setFont(uiFont(11, QFont::DemiBold));
@@ -1294,21 +1554,60 @@ private:
     p.restore();
   }
 
-  void paintManualAnnotations(QPainter &p, double minPrice, double maxPrice) {
-    for (int i = 0; i < manualAnnotations_.size(); ++i) drawManualAnnotation(p, manualAnnotations_[i], minPrice, maxPrice, false, i == selectedAnnotation_);
+  void paintManualAnnotations(QPainter &p, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
+    for (int i = 0; i < manualAnnotations_.size(); ++i) drawManualAnnotation(p, manualAnnotations_[i], minPrice, maxPrice, false, i == selectedAnnotation_, sceneGeometryAlreadyDrawn);
     if (drawingAnnotation_) {
       if (annotationTool_ == AnnotationTool::Polyline) {
         QVector<AnnotationPoint> points = draftPolyline_;
         if (!points.isEmpty()) points.push_back(draftPoint_);
-        drawManualAnnotation(p, {AnnotationTool::Polyline, points, defaultAnnotationStyle(AnnotationTool::Polyline)}, minPrice, maxPrice, true);
+        drawManualAnnotation(p, {AnnotationTool::Polyline, points, defaultAnnotationStyle(AnnotationTool::Polyline)}, minPrice, maxPrice, true, false, sceneGeometryAlreadyDrawn);
       } else {
         const AnnotationPoint end = annotationTool_ == AnnotationTool::SegmentLine ? AnnotationPoint{draftPoint_.index, draftStart_.price} : draftPoint_;
-        drawManualAnnotation(p, {annotationTool_, {draftStart_, end}, defaultAnnotationStyle(annotationTool_)}, minPrice, maxPrice, true);
+        drawManualAnnotation(p, {annotationTool_, {draftStart_, end}, defaultAnnotationStyle(annotationTool_)}, minPrice, maxPrice, true, false, sceneGeometryAlreadyDrawn);
       }
     }
   }
 
-  void drawPositionAnnotation(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice, const QColor &lineColor, bool draft, bool selected) {
+  void appendManualAnnotationSceneNodes(QSGNode *root, double minPrice, double maxPrice) const {
+    for (const ManualAnnotation &annotation : manualAnnotations_) appendManualAnnotationSceneNode(root, annotation, minPrice, maxPrice, false);
+    if (!drawingAnnotation_) return;
+    if (annotationTool_ == AnnotationTool::Polyline) {
+      QVector<AnnotationPoint> points = draftPolyline_;
+      if (!points.isEmpty()) points.push_back(draftPoint_);
+      appendManualAnnotationSceneNode(root, {AnnotationTool::Polyline, points, defaultAnnotationStyle(AnnotationTool::Polyline)}, minPrice, maxPrice, true);
+    } else {
+      const AnnotationPoint end = annotationTool_ == AnnotationTool::SegmentLine ? AnnotationPoint{draftPoint_.index, draftStart_.price} : draftPoint_;
+      appendManualAnnotationSceneNode(root, {annotationTool_, {draftStart_, end}, defaultAnnotationStyle(annotationTool_)}, minPrice, maxPrice, true);
+    }
+  }
+
+  void appendManualAnnotationSceneNode(QSGNode *root, const ManualAnnotation &annotation, double minPrice, double maxPrice, bool draft) const {
+    if (annotation.points.isEmpty()) return;
+    QColor color = annotation.style.line.isValid() ? annotation.style.line : annotationColor(annotation);
+    color.setAlpha(draft ? 245 : 220);
+    const QRectF r = plotRect();
+    if (annotation.tool == AnnotationTool::HorizontalLine) {
+      const double y = yFor(annotation.points[0].price, minPrice, maxPrice);
+      appendPriceLine(root, QLineF(QPointF(r.left(), y), QPointF(r.right(), y)), color);
+    } else if (annotation.tool == AnnotationTool::VerticalLine) {
+      const double x = annotationPoint(annotation.points[0], minPrice, maxPrice).x();
+      appendPriceLine(root, QLineF(QPointF(x, r.top()), QPointF(x, r.bottom())), color);
+    } else if (annotation.tool == AnnotationTool::SegmentLine && annotation.points.size() >= 2) {
+      appendPriceLine(root, QLineF(annotationPoint(annotation.points[0], minPrice, maxPrice), annotationPoint(annotation.points[1], minPrice, maxPrice)), color);
+    } else if (annotation.tool == AnnotationTool::Polyline && annotation.points.size() >= 2) {
+      QVector<QLineF> segments;
+      for (int i = 1; i < annotation.points.size(); ++i) {
+        segments.push_back(QLineF(annotationPoint(annotation.points[i - 1], minPrice, maxPrice), annotationPoint(annotation.points[i], minPrice, maxPrice)));
+      }
+      if (auto *node = q4j::chart_scene::createLineBatchNode(segments, color)) root->appendChildNode(node);
+    } else if (isPositionAnnotation(annotation)) {
+      appendPositionAnnotationSceneNode(root, annotation, minPrice, maxPrice, color, draft);
+    } else if (annotation.tool == AnnotationTool::Rectangle && annotation.points.size() >= 2) {
+      appendRectBorderSceneNode(root, annotationRect(annotation, minPrice, maxPrice), color);
+    }
+  }
+
+  void appendPositionAnnotationSceneNode(QSGNode *root, const ManualAnnotation &annotation, double minPrice, double maxPrice, const QColor &lineColor, bool draft) const {
     const AnnotationPoint entry = annotation.points[0];
     const AnnotationPoint profit = annotation.points[1];
     const AnnotationPoint loss = annotation.points[2];
@@ -1328,18 +1627,55 @@ private:
     }
     const double profitBoundary = isLong ? top : bottom;
     const double lossBoundary = isLong ? bottom : top;
-    drawRangeArea(p, startMs, endMs, entry.price, profitBoundary, profitColor, minPrice, maxPrice);
-    drawRangeArea(p, startMs, endMs, entry.price, lossBoundary, lossColor, minPrice, maxPrice);
-    p.setPen(QPen(lineColor, std::max(1, annotation.style.lineWidth), Qt::SolidLine));
-    p.drawLine(pointAtTime(startMs, entry.price, minPrice, maxPrice), pointAtTime(endMs, entry.price, minPrice, maxPrice));
+    appendRangeAreaSceneNode(root, startMs, endMs, entry.price, profitBoundary, profitColor, minPrice, maxPrice);
+    appendRangeAreaSceneNode(root, startMs, endMs, entry.price, lossBoundary, lossColor, minPrice, maxPrice);
+    appendPriceLineSegment(root, startMs, endMs, entry.price, lineColor, minPrice, maxPrice);
     QColor profitLine = annotation.style.profit;
     QColor lossLine = annotation.style.loss;
     profitLine.setAlpha(225);
     lossLine.setAlpha(225);
-    p.setPen(QPen(profitLine, std::max(1, annotation.style.lineWidth), Qt::DashLine));
-    p.drawLine(pointAtTime(startMs, profitBoundary, minPrice, maxPrice), pointAtTime(endMs, profitBoundary, minPrice, maxPrice));
-    p.setPen(QPen(lossLine, std::max(1, annotation.style.lineWidth), Qt::DashLine));
-    p.drawLine(pointAtTime(startMs, lossBoundary, minPrice, maxPrice), pointAtTime(endMs, lossBoundary, minPrice, maxPrice));
+    appendDashedLineSceneNode(root, QLineF(pointAtTime(startMs, profitBoundary, minPrice, maxPrice), pointAtTime(endMs, profitBoundary, minPrice, maxPrice)), profitLine, 6.0, 4.0);
+    appendDashedLineSceneNode(root, QLineF(pointAtTime(startMs, lossBoundary, minPrice, maxPrice), pointAtTime(endMs, lossBoundary, minPrice, maxPrice)), lossLine, 6.0, 4.0);
+  }
+
+  void appendPriceLine(QSGNode *root, const QLineF &line, const QColor &color) const {
+    if (auto *node = q4j::chart_scene::createLineBatchNode({line}, color)) root->appendChildNode(node);
+  }
+
+  void drawPositionAnnotation(QPainter &p, const ManualAnnotation &annotation, double minPrice, double maxPrice, const QColor &lineColor, bool draft, bool selected, bool sceneGeometryAlreadyDrawn = false) {
+    const AnnotationPoint entry = annotation.points[0];
+    const AnnotationPoint profit = annotation.points[1];
+    const AnnotationPoint loss = annotation.points[2];
+    const bool isLong = annotation.tool == AnnotationTool::LongBlock;
+    const double endIndex = std::max({entry.index, profit.index, loss.index});
+    const double top = std::max({entry.price, profit.price, loss.price});
+    const double bottom = std::min({entry.price, profit.price, loss.price});
+    const qint64 startMs = timeForIndex(entry.index);
+    const qint64 endMs = timeForIndex(endIndex);
+    QColor profitColor = annotation.style.profit;
+    QColor lossColor = annotation.style.loss;
+    profitColor.setAlpha(annotation.style.opacity);
+    lossColor.setAlpha(annotation.style.opacity);
+    if (draft) {
+      profitColor.setAlpha(std::min(160, profitColor.alpha() + 35));
+      lossColor.setAlpha(std::min(160, lossColor.alpha() + 35));
+    }
+    const double profitBoundary = isLong ? top : bottom;
+    const double lossBoundary = isLong ? bottom : top;
+    if (!sceneGeometryAlreadyDrawn) {
+      drawRangeArea(p, startMs, endMs, entry.price, profitBoundary, profitColor, minPrice, maxPrice);
+      drawRangeArea(p, startMs, endMs, entry.price, lossBoundary, lossColor, minPrice, maxPrice);
+      p.setPen(QPen(lineColor, std::max(1, annotation.style.lineWidth), Qt::SolidLine));
+      p.drawLine(pointAtTime(startMs, entry.price, minPrice, maxPrice), pointAtTime(endMs, entry.price, minPrice, maxPrice));
+      QColor profitLine = annotation.style.profit;
+      QColor lossLine = annotation.style.loss;
+      profitLine.setAlpha(225);
+      lossLine.setAlpha(225);
+      p.setPen(QPen(profitLine, std::max(1, annotation.style.lineWidth), Qt::DashLine));
+      p.drawLine(pointAtTime(startMs, profitBoundary, minPrice, maxPrice), pointAtTime(endMs, profitBoundary, minPrice, maxPrice));
+      p.setPen(QPen(lossLine, std::max(1, annotation.style.lineWidth), Qt::DashLine));
+      p.drawLine(pointAtTime(startMs, lossBoundary, minPrice, maxPrice), pointAtTime(endMs, lossBoundary, minPrice, maxPrice));
+    }
     drawPositionAnnotationLabels(p, annotation, startMs, endMs, entry.price, profitBoundary, lossBoundary, minPrice, maxPrice);
     if (selected) drawAnnotationSelection(p, annotation, minPrice, maxPrice);
   }
@@ -1877,7 +2213,7 @@ private:
     });
   }
 
-  void paintOverlays(QPainter &p, double minPrice, double maxPrice) {
+  void paintOverlays(QPainter &p, double minPrice, double maxPrice, bool sceneGenericLayersAlreadyDrawn = false) {
     positionHitboxes_.clear();
     lineLayerHitboxes_.clear();
     if (candles_.isEmpty()) return;
@@ -1885,7 +2221,7 @@ private:
     p.setClipRect(plotRect());
     p.setFont(uiFont(10, QFont::Medium));
     if (!parsedLayers_.isEmpty()) {
-      paintGenericLayers(p, minPrice, maxPrice);
+      paintGenericLayers(p, minPrice, maxPrice, sceneGenericLayersAlreadyDrawn);
       p.restore();
       return;
     }
@@ -1920,7 +2256,7 @@ private:
     p.restore();
   }
 
-  void paintIndicators(QPainter &p, double minPrice, double maxPrice) {
+  void paintIndicators(QPainter &p, double minPrice, double maxPrice, bool sceneGeometryAlreadyDrawn = false) {
     if (candles_.isEmpty()) return;
     const int start = std::max(0, static_cast<int>(std::floor(visibleStart_)) - 2);
     const int end = std::min(candleCount(), static_cast<int>(std::ceil(visibleStart_ + visibleCount_)) + 2);
@@ -1935,21 +2271,26 @@ private:
       const int to = std::clamp(boxShape.to, 0, candleCount() - 1);
       QRectF rect(pointAtIndex(from, boxShape.top, minPrice, maxPrice), pointAtIndex(to, boxShape.bottom, minPrice, maxPrice));
       rect = rect.normalized();
-      p.fillRect(rect, boxShape.fill);
-      p.setBrush(Qt::NoBrush);
-      p.setPen(QPen(boxShape.border, 1));
-      p.drawRect(rect);
+      if (!sceneGeometryAlreadyDrawn) {
+        p.fillRect(rect, boxShape.fill);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(boxShape.border, 1));
+        p.drawRect(rect);
+      }
     }
 
     for (const IndicatorLine &lineShape : indicatorEngine_.lines()) {
       if (lineShape.to < start || lineShape.from >= end) continue;
-      p.setPen(QPen(lineShape.color, lineShape.width));
-      p.drawLine(pointAtIndex(lineShape.from, lineShape.y1, minPrice, maxPrice),
-                 pointAtIndex(lineShape.to, lineShape.y2, minPrice, maxPrice));
+      if (!sceneGeometryAlreadyDrawn) {
+        p.setPen(QPen(lineShape.color, lineShape.width));
+        p.drawLine(pointAtIndex(lineShape.from, lineShape.y1, minPrice, maxPrice),
+                   pointAtIndex(lineShape.to, lineShape.y2, minPrice, maxPrice));
+      }
     }
 
     for (const IndicatorPlot &plot : indicatorEngine_.plots()) {
       if (plot.values.isEmpty()) continue;
+      if (sceneGeometryAlreadyDrawn) continue;
       p.setPen(QPen(plot.color, plot.width));
       QPainterPath path;
       bool active = false;
@@ -2459,14 +2800,16 @@ private:
     p.restore();
   }
 
-  void paintLatestPriceLine(QPainter &p, double minPrice, double maxPrice) {
+  void paintLatestPriceLine(QPainter &p, double minPrice, double maxPrice, bool sceneLineAlreadyDrawn = false) {
     if (candles_.isEmpty()) return;
     const Candle &latest = candles_.last();
     const QRectF r = plotRect();
     const double y = yFor(latest.close, minPrice, maxPrice);
     const QColor color = latest.close >= latest.open ? up() : down();
-    p.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 185), 1, Qt::DashLine));
-    p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+    if (!sceneLineAlreadyDrawn) {
+      p.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 185), 1, Qt::DashLine));
+      p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+    }
     drawAxisTag(p, QRectF(r.right() + 6, y - 9, 66, 18), QString::number(latest.close, 'f', 2), color);
   }
 
