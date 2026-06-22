@@ -51,7 +51,7 @@ Rectangle {
                 GradientStop { position: 0.0; color: theme.brandBlueHover }
                 GradientStop { position: 1.0; color: theme.brandBlue }
             }
-            border.color: "rgba(255,255,255,0.22)"
+            border.color: "#38FFFFFF"
             Text {
                 anchors.centerIn: parent
                 text: "Q"

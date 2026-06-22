@@ -14,8 +14,8 @@ inline QString bgToolbar() { return "#0A1017"; }   // top nav / toolbars
 inline QString bgElevated() { return "#192330"; }  // popups / dialogs
 inline QString bgHover() { return "#1E2A38"; }
 
-inline QString borderSubtle() { return "rgba(164, 185, 211, 0.11)"; }
-inline QString borderStrong() { return "rgba(53, 208, 181, 0.42)"; }
+inline QString borderSubtle() { return "#1CA4B9D3"; }
+inline QString borderStrong() { return "#6B35D0B5"; }
 
 inline QString textPrimary() { return "#EAF2F8"; }
 inline QString textSecondary() { return "#9FB1C5"; }
@@ -23,7 +23,7 @@ inline QString textMuted() { return "#66788D"; }
 
 inline QString brandBlue() { return "#35D0B5"; }
 inline QString brandBlueHover() { return "#5DE7D1"; }
-inline QString brandBlueSoft() { return "rgba(53, 208, 181, 0.15)"; }
+inline QString brandBlueSoft() { return "#2635D0B5"; }
 
 inline QString green() { return "#2FE6A6"; }
 inline QString red() { return "#FF5D73"; }
@@ -36,13 +36,13 @@ inline QString lBgApp() { return "#EEF3F7"; }
 inline QString lBgPanel() { return "#FFFFFF"; }
 inline QString lBgElevated() { return "#F7FAFC"; }
 inline QString lBgHover() { return "#E8F1F5"; }
-inline QString lBorderSubtle() { return "rgba(24, 48, 77, 0.10)"; }
-inline QString lBorderStrong() { return "rgba(0, 145, 128, 0.28)"; }
+inline QString lBorderSubtle() { return "#1A18304D"; }
+inline QString lBorderStrong() { return "#47009180"; }
 inline QString lTextPrimary() { return "#182435"; }
 inline QString lTextSecondary() { return "#536273"; }
 inline QString lTextMuted() { return "#8A9AAA"; }
 inline QString lBrandBlue() { return "#009982"; }
-inline QString lBrandBlueSoft() { return "rgba(0, 153, 130, 0.10)"; }
+inline QString lBrandBlueSoft() { return "#1A009982"; }
 
 // ---- QColor accessors for the painter (dark) --------------------------------
 inline QColor cBgApp() { return QColor("#070B10"); }
