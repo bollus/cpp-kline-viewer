@@ -57,6 +57,17 @@ public:
     setCandlesInternal(std::move(candles), false);
   }
 
+  void setReplayCandlesToCursor(QVector<Candle> candles, qint64 cursorMs) {
+    setCandlesInternal(std::move(candles), false);
+    if (candles_.isEmpty() || cursorMs <= 0) return;
+    const double cursorIndex = indexForTime(cursorMs);
+    const double rightBars = std::clamp(static_cast<double>(rightOffsetBars_), 8.0, 28.0);
+    visibleStart_ = clampVisibleStart(cursorIndex - std::max(1.0, static_cast<double>(visibleCount_) - rightBars));
+    emitOverlayRange();
+    emitVisibleRange();
+    update();
+  }
+
   void prependCandles(QVector<Candle> older) {
     if (older.isEmpty()) return;
     if (candles_.isEmpty()) {
@@ -74,7 +85,8 @@ public:
     }), candles_.end());
     const int previousIndex = indexAtTime(previousFirst);
     if (previousIndex > 0) visibleStart_ = previousVisibleStart + previousIndex;
-    visibleStart_ = std::clamp(visibleStart_, 0.0, maxVisibleStart());
+    visibleStart_ = clampVisibleStart(visibleStart_);
+    loadingOlderRequested_ = false;
     rebuildIndicatorsNow();
     emitVisibleRange();
     update();
@@ -289,7 +301,7 @@ public:
     if (candles_.isEmpty() || endMs <= startMs) return;
     const qint64 centerMs = startMs + (endMs - startMs) / 2;
     const double centerIdx = static_cast<double>(indexAtTime(centerMs));
-    visibleStart_ = std::clamp(centerIdx - visibleCount_ / 2.0, 0.0, maxVisibleStart());
+    visibleStart_ = clampVisibleStart(centerIdx - visibleCount_ / 2.0);
     update();
   }
 
@@ -427,7 +439,7 @@ protected:
       const int dx = posF.x() - dragStart_.x();
       const int dy = posF.y() - dragStart_.y();
       const double deltaBars = -dx / std::max(0.05, barStep());
-      visibleStart_ = std::clamp(dragVisibleStart_ + deltaBars, 0.0, maxVisibleStart());
+      visibleStart_ = clampVisibleStart(dragVisibleStart_ + deltaBars);
       manualPriceOffset_ = dragPriceOffset_ + dy * dragPriceRange_ / std::max(1.0, plotRect().height());
       requestMoreIfNeeded();
       emitOverlayRange();
@@ -441,7 +453,7 @@ protected:
       visibleCount_ = std::clamp(static_cast<int>(std::round(axisVisibleCount_ * std::exp(dx / 480.0))), 20, std::max(40, candleCount() + rightOffsetBars_));
       const double newStep = plotRect().width() / std::max(1, visibleCount_);
       const double newLocalIndex = axisAnchorLocalX_ / std::max(0.05, newStep) - 0.5;
-      visibleStart_ = std::clamp(axisAnchorIndex_ - newLocalIndex, 0.0, maxVisibleStart());
+      visibleStart_ = clampVisibleStart(axisAnchorIndex_ - newLocalIndex);
       emitOverlayRange();
       emitVisibleRange();
       // X-axis drag is a zoom/scale gesture — not broadcast to sibling panes.
@@ -580,7 +592,7 @@ protected:
     } else if (before != visibleCount_) {
       visibleStart_ += (before - visibleCount_) / 2;
     }
-    visibleStart_ = std::clamp(visibleStart_, 0.0, maxVisibleStart());
+    visibleStart_ = clampVisibleStart(visibleStart_);
     requestMoreIfNeeded();
     emitOverlayRange();
     emitVisibleRange();
@@ -632,6 +644,15 @@ private:
 
   double maxVisibleStart() const {
     return std::max(0.0, double(candleCount() - visibleCount_ + rightOffsetBars_));
+  }
+
+  double minVisibleStart() const {
+    if (candles_.isEmpty()) return 0.0;
+    return -std::max(500.0, static_cast<double>(visibleCount_) * 2.0);
+  }
+
+  double clampVisibleStart(double value) const {
+    return std::clamp(value, minVisibleStart(), maxVisibleStart());
   }
 
   bool isAtRealtimeEdge() const {

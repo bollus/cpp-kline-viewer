@@ -655,7 +655,10 @@ private:
   bool hasReplayDataForCursor(qint64 cursor) const {
     if (!replayActive_) return true;
     if (loaded_.isEmpty()) return false;
-    return cursor >= loaded_.first().ms;
+    if (cursor < loaded_.first().ms || cursor > loaded_.last().ms) return false;
+    auto it = std::upper_bound(loaded_.begin(), loaded_.end(), cursor, [](qint64 ms, const Candle &c) { return ms < c.ms; });
+    const int candlesBeforeCursor = static_cast<int>(std::distance(loaded_.begin(), it));
+    return candlesBeforeCursor >= 180;
   }
 
   bool requestReplayDataIfNeeded(qint64 cursor) {
@@ -670,8 +673,9 @@ private:
   void applyReplayView() {
     if (!chart_) return;
     if (replayActive_ && requestReplayDataIfNeeded(replayCursorMs_)) return;
-    chart_->setReplayCandles(replayCandles());
-    if (replayActive_ && !loaded_.isEmpty()) chart_->setReplayMarker(loaded_.first().ms, true);
+    if (replayActive_) chart_->setReplayCandlesToCursor(replayCandles(), replayCursorMs_);
+    else chart_->setReplayCandles(replayCandles());
+    if (replayActive_ && !loaded_.isEmpty()) chart_->setReplayMarker(replayCursorMs_, true);
     else chart_->setReplayMarker(0, false);
     if (!loaded_.isEmpty())
       dataStartText_ = "数据起点：" + formatTime(loaded_.first().ms, "yyyy-MM-dd HH:mm");
